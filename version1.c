@@ -6,16 +6,35 @@
 
 #define MAX_LINE_LENGTH 1024
 
-/* only for linux */
-void enable_raw_mode() { 
+#define RESET "\033[0m"
+#define RED "\033[31m"
+#define CYAN "\033[36m"
+#define GREEN "\033[32m"
+#define YELLOW "\033[33m"
+
+#define MAX_INVENTORY_ITEMS 3
+
+ 
+/*
+    GLOBAL VARIABLES
+*/
+int player_h = 100;
+
+char items[MAX_INVENTORY_ITEMS] = {'\0','\0','\0'};
+
+int weapon_flag = 0;
+
+/* 
+    RAW MODE FOR INPUT & CONSOLE CLEAR
+*/
+void enable_raw_mode() { /* only for linux */
     struct termios term;
     tcgetattr(STDIN_FILENO, &term);
     term.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &term);
 }
 
-/* only for linux */
-void disable_raw_mode() { 
+void disable_raw_mode() { /* only for linux */
     struct termios term;
     tcgetattr(STDIN_FILENO, &term);
     term.c_lflag |= (ICANON | ECHO);
@@ -32,6 +51,9 @@ void clear_console() { // clears the console screan based on OS
     #endif
 }
 
+/*
+    ARENA FUNCTIONS
+*/
 void get_arena_dimensions(const char *file_name, int *rows, int *cols) { // determines the rows and cols of the arena
     FILE *fp = fopen(file_name, "r");
     if (!fp) {
@@ -95,11 +117,11 @@ void initialize_arena(char **arena, int rows, int cols, const char *filename) { 
                 if (j < length) {
                     arena[i][j] = line[j];
                 } else {
-                    arena[i][j] = ' ';  // Fill with spaces if line is shorter than expected
+                    arena[i][j] = ' ';  // fill with spaces if line is shorter than expected
                 }
             }
         } else {
-            // Fill the rest of the arena with spaces if file has fewer lines
+            // fill the rest of the arena with spaces if file has fewer lines
             for (int j = 0; j < cols; j++) {
                 arena[i][j] = ' ';
             }
@@ -112,10 +134,133 @@ void initialize_arena(char **arena, int rows, int cols, const char *filename) { 
 void print_arena(char **arena, int rows, int cols) { 
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
-            printf("%c ", arena[i][j]);
+            if (arena[i][j] == 'w' || arena[i][j] == 'x') printf("%s%c %s", RED, arena[i][j], RESET); // enemies ~ RED
+            else if (arena[i][j] == '#') printf("%s%c %s", YELLOW, arena[i][j], RESET); // exit ~ YELLOW
+            else if (arena[i][j] == '+' || arena[i][j] == '^') printf("%s%c %s", GREEN, arena[i][j], RESET); // consumables ~ GREEN
+            else if (arena[i][j] == 'p') printf("%s%c %s", CYAN, arena[i][j], RESET); // player ~ CYAN
+            else printf("%c ", arena[i][j]); // rest of elements ~ REGULAR
         }
         printf("\n");
     }
+}
+
+/*
+    HANDLE FUNCTIONS
+*/
+void handle_player_health(int health) {
+    if (health >= 100) { // print player health with green for [100,+]
+        printf("|"); printf("%sH%s", GREEN, RESET); printf(":");
+        printf("%s%d%s", GREEN, health, RESET); printf("|");
+    }
+    else if (health < 100 && health >= 70) { // // print player health with green [70,100]
+        printf("|"); printf("%sH%s", GREEN, RESET); printf(":");
+        printf("%s0%d%s", GREEN, health, RESET); printf("|");
+    }
+    else if (health < 70 && health >= 30) { // print player health with yellow for [30,70)
+        printf("|"); printf("%sH%s", YELLOW, RESET); printf(":");
+        printf("%s0%d%s", YELLOW, health, RESET); printf("|");
+    }
+    else if (health < 30 && health >= 10) { // print player health with red for [10,30)
+        printf("|"); printf("%sH%s", RED, RESET); printf(":");
+        printf("%s0%d%s", RED, health, RESET); printf("|");
+    }
+    else if (health < 10 && health >= 1) { // print player health with red for [1,10)
+        printf("|"); printf("%sH%s", RED, RESET); printf(":");
+        printf("%s00%d%s", RED, health, RESET); printf("|");
+    }
+    else printf("|H:000|");
+}
+
+void handle_consumables(char items[]){
+
+    for(int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+        if (items[i] != '\0'){ 
+            printf("%s[%s", CYAN, RESET); printf("%s%c%s", GREEN, items[i], RESET); printf("%s]%s", CYAN, RESET);
+        }  
+        else printf("%s[ ]%s", CYAN, RESET);  
+       
+        if (i < MAX_INVENTORY_ITEMS) {
+            printf("|");  
+        }
+    }
+    printf("\n= = = = = = = = = =\n");
+}
+
+int handle_input(int *player_x, int *player_y, char **arena, int rows, int cols) {
+    char input = getchar();
+
+    if (input == '\x1b') {  
+        input = getchar();
+        if(input =='['){
+            input = getchar();
+            if(input == 'D' || input == 'A' || input == 'B' || input == 'C') return 0;
+        }
+    }
+  
+    switch (input) {
+        case 'w': case 'W': // move up
+            if (*player_x > 1 && arena[*player_x - 1][*player_y] != '=' && arena[*player_x - 1][*player_y] != '|') 
+                (*player_x)--;
+            break;
+        case 's': case 'S': // move down
+            if (*player_x < rows - 2 && arena[*player_x + 1][*player_y] != '=' && arena[*player_x + 1][*player_y] != '|') 
+                (*player_x)++;
+            break;
+        case 'a': case 'A': // move left
+            if (*player_y > 1 && arena[*player_x][*player_y - 1] != '=' && arena[*player_x][*player_y - 1] != '|') 
+                (*player_y)--;
+            break;
+        case 'd': case 'D': // move right
+            if (*player_y < cols - 2 && arena[*player_x][*player_y + 1] != '=' && arena[*player_x][*player_y + 1] != '|') 
+                (*player_y)++;
+            break;
+        case '\t': // exit by pressing tab
+            return 1;
+        case '1': // consumable 1
+            if(items[0] == '+') {
+                player_h += 15;
+                items[0] = '\0';
+                }
+            else if(items[0] == '^') {
+                weapon_flag = 1;
+                items[0] = '\0';
+            }
+            break;
+        case '2': // consumable 2
+            if(items[1] == '+') {
+                player_h += 15;
+                items[1] = '\0';
+              
+                }
+            else if(items[1] == '^') {
+                weapon_flag = 1;
+                items[1] = '\0';
+            }
+            break;
+        case '3': // consumable 3
+            if(items[2] == '+') {
+                player_h += 15;
+                items[2] = '\0';
+                }
+            else if(items[2] == '^') {
+                weapon_flag = 1;
+                items[2] = '\0';
+            }
+            break;
+        default:
+            break;
+    }
+    
+    return 0; 
+}
+
+int is_inventory_full(char items[]) {
+    for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+        if (items[i] == '\0') {
+            return 0; // Inventory is not full
+        }
+    }
+    return 1; // Inventory is full
 }
 
 int main() {
@@ -144,28 +289,96 @@ int main() {
     enable_raw_mode();
 
     char input; // stores keyboard input
+    
     int death_flag = 0;
+    int spike_flag = 0; 
+    int exit_game = 0;
+    int warrior_flag = 0;
+    int next_arena = 0; 
 
-    while (1) { // game loop
+    int over_health_consumable = 0; // flags for knowing when the player is on top of items
+    int over_attack_consumable = 0;
+
+    while (!exit_game) { // game loop
 
         clear_console();
-        print_arena(arena, rows, cols);  
+        printf("= = = = = = = = = =\n| TEXT_ADVENTURE_ |\n");
+        print_arena(arena, rows, cols);
+
+        handle_player_health(player_h);
+        handle_consumables(items);
     
-        if(!death_flag) input = getchar(); 
-        else break;
+        if(player_h <= 0) { // if health reaches 0 ~ death flag and break the loop
+            death_flag = 1;
+            break; 
+        }
+        else if(next_arena) break; // if '#' is reached ~ arena is leaved ~ break the loop
 
-        arena[player_x][player_y] = ' '; // clear current player location
+        if(spike_flag){ // if the player is over a spike 'x' ~ after leaving that position the spike remains there
+            arena[player_x][player_y] = 'x'; 
+            spike_flag = 0;
+        }
+        else if (over_attack_consumable) {    // if the player is over an attack increase consumable 
+            arena[player_x][player_y] = '^';  // and the inventory is full, the item remains on the ground 
+            over_attack_consumable = 0;
+        }
+        else if (over_health_consumable) {    // same as for the attack consumable
+            arena[player_x][player_y] = '+';
+            over_health_consumable = 0;
+        }
+        else arena[player_x][player_y] = ' '; // clear current player location
 
-        if ((input == 'w' || input == 'W') && player_x > 1 && arena[player_x - 1][player_y] != '=' && arena[player_x - 1][player_y] != '|') player_x--;         
-        else if ((input == 's' || input == 'S') && player_x < rows - 2 && arena[player_x + 1][player_y] != '=' && arena[player_x + 1][player_y] != '|') player_x++;  
-        else if ((input == 'a' || input == 'A') && player_y > 1 && arena[player_x][player_y - 1] != '=' && arena[player_x][player_y - 1] != '|') player_y--;     
-        else if ((input == 'd' || input == 'D') && player_y < cols - 2 && arena[player_x][player_y + 1] != '=' && arena[player_x][player_y + 1] != '|') player_y++;  
-        else if (input == 'x') break;   
+        exit_game = handle_input(&player_x, &player_y, arena, rows, cols);   
 
-        if ((input == 'w' || input == 'W' || input == 's' || input == 'S' || input == 'a' || input == 'A' || input == 'd' || input == 'D') && arena[player_x][player_y] == 'x') death_flag = 1;
+        if (arena[player_x][player_y] == 'x'){ // -30 health if the player is on top of a spike
+            player_h -= 30; 
+            spike_flag = 1; 
+        }
+
+        if (arena[player_x][player_y] == 'w' && !weapon_flag){  // if player position = w position & the player has no weapon,
+            player_h -= 200;                                    // he dies, oth the warrior dies
+            warrior_flag = 1; 
+        }
+        
+        if (arena[player_x][player_y] == '+') {
+            if (player_h <= 15) { // auto use the health consumable if health is lower than 15
+                player_h += 15;
+            } 
+            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                    if (items[i] == '\0') {
+                        items[i] = '+';
+                        break;
+                    }
+                }
+            } 
+            else { // inventory is full ~ activate flag to let the item on the ground
+                over_health_consumable = 1;
+            }
+        }
+
+        if (arena[player_x][player_y] == '#') next_arena = 1; 
+
+        if (arena[player_x][player_y] == '^') {
+            if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                    if (items[i] == '\0') {
+                        items[i] = '^';
+                        break;
+                    }
+                }
+            } 
+            else { // inventory is full ~ activate flag to let the item on the ground
+                over_attack_consumable = 1;
+            }
+        }
         
         arena[player_x][player_y] = 'p'; // update player location on the arena
 
+        if(warrior_flag) arena[player_x][player_y] = 'w'; // if 'w' kills 'p' he overrides the player on the map
+        else if (next_arena) arena[player_x][player_y] = '#'; // if 'p' reaches the exit, '#' overrides the player
+        else if (spike_flag && player_h <= 0) arena[player_x][player_y] = 'x'; // 'p' overrides a spike when he s on
+                                                                               // as long as he s not dead
     }
 
     disable_raw_mode();
@@ -173,6 +386,7 @@ int main() {
     free_arena(arena, rows);
 
     if(death_flag) printf("GAME OVER!\n");
+    else if(next_arena) printf("YOU WON!\n");
 
     return 0;
 }
