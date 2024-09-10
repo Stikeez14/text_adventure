@@ -3,7 +3,7 @@ A simple terminal-based game written in C
 
 ## ROADMAP
 ### v1: 
-- 20 Pre-Built arenas
+- 20 Pre-Built Arenas
 - Traps & Enemies
 - Attack & Defense Mechanics
 - Health System
@@ -16,7 +16,7 @@ A simple terminal-based game written in C
 - Shop NPC
 - Boss Battles
 - Mini-Quests
-- Achievments System
+- Achievements System
 ### v3:
 - New Survival Game Mode
 - Resource Gathering
