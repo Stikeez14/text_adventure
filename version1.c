@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <stdbool.h>
 
 #define MAX_LINE_LENGTH 1024
 
@@ -14,50 +15,109 @@
 #define YELLOW "\033[33m"
 #define DARK_GRAY "\x1b[90m"
 #define BRIGHT_RED "\x1b[38;5;196m"
+#define ORANGE "\x1b[38;5;214m"
 
 #define MAX_INVENTORY_ITEMS 3
- 
+
+typedef struct {
+    int row;
+    int col;
+} Point;
+
+typedef struct Node {
+    Point point;
+    struct Node *next;
+} Node;
+
+typedef struct Queue {
+    Node *front;
+    Node *rear;
+} Queue;
+
 /*
     GLOBAL VARIABLES
 */
 int player_h = 100;
-
 char items[MAX_INVENTORY_ITEMS] = {'\0','\0','\0'};
 
-int weapon_flag = 0;
+//char *arena_files[] = {"welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
+//"arena0.txt", "arena1.txt", "arena2.txt"};
 
-char *arena_files[] = {"welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
-"arena0.txt", "arena1.txt", "arena2.txt"};
-
-
+char *arena_files[] = {"welcome.txt", "arena1.txt"};
 int current_arena = 0;  // keeps track of the current arena level
-
 int num_arenas = sizeof(arena_files) / sizeof(arena_files[0]);
 
+bool is_paused = false; // used for the pause menu
+int warrior_flag = 0;
+int death_flag = 0;
+int weapon_flag = 0;
+int use_consumable = 0;
+
+int row_dir[] = {-1, 1, 0, 0};
+int col_dir[] = {0, 0, -1, 1};
+
+void clear_console();
+
 /*
-    FUNCTION PROTOTYPES
+    FUNCTION PROTOTYPES 
 */
+void start_game(); // game loop
+
+void get_arena_dimensions(const char *file_name, int *rows, int *cols); // determines the rows and cols of the arena
+char** create_arena(int rows, int cols); // allocates memory for the arena
+void free_arena(char **arena, int rows); // frees the allocated memory
+void initialize_arena(char **arena, int rows, int cols, const char *filename); // initializes the arena from the file
+void print_arena(char **arena, int rows, int cols); 
+void initialize_game(char ***arena, int *rows, int *cols, int *player_x, int *player_y); // dimensions + create + init + player position
+
+void print_gui(char **arena, int rows, int cols); // gui + game window
+void handle_player_health(int health); // prints player health
+void handle_consumables(char items[]); // prints the invetory and items
+void handle_tutorials(); // displays the right tutorial based on the arena
+int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, int cols); // takes keyboard inputs
+int is_inventory_full(char items[]); 
+void handle_inventory_slot(char *item_slot); 
+
+void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y);
+void reset_flags(int *spike_flag, int *exit_game, int *warrior_flag, int *next_arena, 
+    int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole);
+
+Queue* create_queue();
+void enqueue(Queue *queue, Point point);
+Point dequeue(Queue *queue);
+int is_empty(Queue *queue);
+void fighters_bfs(char **arena, int rows, int cols, int player_x, int player_y, int dist[rows][cols]);
+void move_fighters(char **arena, int rows, int cols, int player_x, int player_y);
+
+void display_main_menu();
+int display_pause_menu();
+void display_tutorial_movement();
 void display_tutorial0();
-
 void display_tutorial1();
-
+void display_tutorial_health();
 void display_tutorial2();
-
+void display_tutorial_inventory();
 void display_tutorial3();
-
 void display_tutorial4();
+void display_tutorial_fail();
+void display_spike_death();
+void display_hole_death();
+void display_warrior_death();
+void display_exit_message();
+void display_win();
 
 /* 
     RAW MODE FOR INPUT, CONSOLE CLEAR, TERMINAL CURSOR & UNEXPECTED EXITS
+    (only for linux at the moment) 
 */
-void enable_raw_mode() { /* only for linux */
+void enable_raw_mode() { 
     struct termios term;
     tcgetattr(STDIN_FILENO, &term);
     term.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &term);
 }
 
-void disable_raw_mode() { /* only for linux */
+void disable_raw_mode() { 
     struct termios term;
     tcgetattr(STDIN_FILENO, &term);
     term.c_lflag |= (ICANON | ECHO);
@@ -94,10 +154,220 @@ void clear_console() { // clears the console screan based on OS
     #endif
 }
 
+/* 
+    MAIN FUNCTION
+*/
+int main() {
+
+    signal(SIGINT, handle_sigint);
+    
+    atexit(cleanup);
+
+    enable_raw_mode();
+
+    hide_cursor();
+    
+    display_main_menu();
+
+    return 0;
+}
+
+/* 
+    GAME LOOP FUNCTION
+*/
+void start_game() {
+  
+    int rows, cols;
+    char **arena;
+    int player_x, player_y; // coordinates for player
+
+    initialize_game(&arena, &rows, &cols, &player_x, &player_y);
+
+    if(!current_arena) display_tutorial_movement();
+    
+    char input; // stores keyboard input
+    
+    // flags
+    int spike_flag = 0; 
+    int exit_game = 0;
+    int next_arena = 0; 
+
+    int over_health_consumable = 0; // flags for knowing when the player is on top of items
+    int over_attack_consumable = 0;
+    int over_info = 0;
+    int over_small_hole = 0;
+
+    int after_pause = 0;
+
+    while (!exit_game) { 
+
+        print_gui(arena, rows, cols); // game window + gui
+
+        after_pause = 0;
+        use_consumable = 0;
+    
+        /* UPDATE ARENA CONSUMABLES AND TRAPS */
+        if(spike_flag) { // if the player is over a spike 'x' ~ after leaving that position the spike remains there
+            arena[player_x][player_y] = 'x'; 
+            spike_flag = 0;
+        }
+        else if (over_info) {
+            arena[player_x][player_y] = '!';  // same as for the spike
+            over_info = 0;
+        }
+        else if (over_small_hole) {
+            arena[player_x][player_y] = 'o'; // same as for the spike and info
+            over_small_hole = 0;
+        }
+        else if (over_attack_consumable) {    // if the player is over an attack increase consumable 
+            arena[player_x][player_y] = '^';  // and the inventory is full, the item remains on the ground 
+            over_attack_consumable = 0;
+        }
+        else if (over_health_consumable) {    // same as for the attack consumable
+            arena[player_x][player_y] = '+';
+            over_health_consumable = 0;
+        }
+        else arena[player_x][player_y] = ' '; // clear current player location 
+    
+        /* INPUT AND PLAYER INTERACTIONS */
+        if(!death_flag) exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);
+
+        if (exit_game == 2) { // if the user paused the game & decides to continue playing
+            after_pause = 1;  // update flag
+            exit_game = 0;
+        } 
+        else if (exit_game) continue; // if the user leaves the game, skip the rest of the loop
+
+        if (arena[player_x][player_y] == 'x') { // -30 health if the player is on top of a spike
+            if (!after_pause && !use_consumable) player_h -= 30; 
+            spike_flag = 1; 
+        }
+
+        if ((arena[player_x][player_y] == 'w' || death_flag) && !weapon_flag) { // if player position = w position & the player has no weapon,
+            player_h -= 200;                                    // he dies, oth the warrior dies
+            warrior_flag = 1; 
+        }
+
+        if (player_h <= 0 && strstr(arena_files[current_arena], "arena")) { // if health reaches 0 ~ death flag and break the loop
+            current_arena = 0;
+            if (spike_flag) display_spike_death();
+            else if (death_flag) display_warrior_death(); 
+            death_flag = 0;
+            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
+            break; 
+        }
+        else if (player_h <= 0 && strstr(arena_files[current_arena], "tutorial")) {
+            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
+            display_tutorial_fail();
+            continue; // skip this game loop iteration
+        }
+
+        if (arena[player_x][player_y] == 'O' && strstr(arena_files[current_arena], "arena")) { // fall in hole ~ instant death
+            current_arena = 0;
+            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
+            display_hole_death();
+            break; 
+        }
+        else if (arena[player_x][player_y] == 'O' && strstr(arena_files[current_arena], "tutorial")) {
+            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
+            display_tutorial_fail();
+            continue; // skip this game loop iteration
+        }
+
+        if (arena[player_x][player_y] == 'o') { // touching a small hole ~ lose all your items
+            over_small_hole = 1;
+            for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
+        }
+        
+        if (arena[player_x][player_y] == '+') {
+            if (player_h <= 15) player_h += 15; // auto use the health consumable if health is lower than 15
+            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                    if (items[i] == '\0') {
+                        items[i] = '+';
+                        break;
+                    }
+                }
+            } 
+            else over_health_consumable = 1; // inventory is full ~ activate flag to let the item on the ground
+        }
+
+        if (arena[player_x][player_y] == '^') {
+            if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                    if (items[i] == '\0') {
+                        items[i] = '^';
+                        break;
+                    }
+                }
+            } 
+            else over_attack_consumable = 1;  // inventory is full ~ activate flag to let the item on the ground
+        }
+
+        if (arena[player_x][player_y] == '#') next_arena = 1; 
+
+        if (arena[player_x][player_y] == 'K') {
+            for (int i = 0; i < rows; i++) { // change 'D' to '#' and 'd' to ' ' after the key is picked
+                for (int j = 0; j < cols; j++) {
+                    if (arena[i][j] == 'D') arena[i][j] = '#';
+                    else if (arena[i][j] == 'd') arena[i][j] = ' ';
+                }
+            }
+        }
+
+        if (arena[player_x][player_y] == 'k') {
+            for (int i = 0; i < rows; i++) { // change 'd' to ' ' after the key is picked
+                for (int j = 0; j < cols; j++) if (arena[i][j] == 'd') arena[i][j] = ' ';
+            }
+        }
+
+        if (arena[player_x][player_y] == '!') {
+            over_info = 1;
+            if (!after_pause && !use_consumable) handle_tutorials(); // print tutorial message based on the current tutorial arena
+        }
+
+        if (!after_pause && !use_consumable) move_fighters(arena, rows, cols, player_x, player_y);
+
+        /* LOAD NEXT ARENA */
+        if (next_arena) {
+            if (current_arena == 2) display_tutorial_health(); // display health system tutorial;
+            else if (current_arena == 3) display_tutorial_inventory(); // display items & inventory tutorial
+            
+            current_arena++;  // move to the next arena
+            
+            if(strstr(arena_files[current_arena], "tutorial") || strstr(arena_files[current_arena], "welcome")) { // in every tutorial arena reset the health and items
+               player_h = 100;
+               for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
+            }
+
+            if (current_arena < num_arenas) {
+                free_arena(arena, rows); // current area freed
+                initialize_game(&arena, &rows, &cols, &player_x, &player_y); // initialize the next arena
+                next_arena = 0;  // reset flag
+            } 
+            else {
+                current_arena = 0;
+                display_win(); // win message after the last arena
+                reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+                break;
+            }
+        }
+
+        arena[player_x][player_y] = 'p'; // update player location on the arena
+    }
+
+    free_arena(arena, rows);
+    clear_console();
+}
+
 /*
     ARENA FUNCTIONS
 */
-void get_arena_dimensions(const char *file_name, int *rows, int *cols) { // determines the rows and cols of the arena
+void get_arena_dimensions(const char *file_name, int *rows, int *cols) { 
     FILE *fp = fopen(file_name, "r");
     if (!fp) {
         perror("fopen");
@@ -119,7 +389,7 @@ void get_arena_dimensions(const char *file_name, int *rows, int *cols) { // dete
     fclose(fp);
 }
 
-char** create_arena(int rows, int cols) { // allocates memory for the arena
+char** create_arena(int rows, int cols) { 
     char **arena = (char **)malloc(rows * sizeof(char *));
     if (arena == NULL) {
         perror("malloc");
@@ -138,14 +408,12 @@ char** create_arena(int rows, int cols) { // allocates memory for the arena
     return arena;
 }
 
-void free_arena(char **arena, int rows) { // frees the allocated memory
-    for (int i = 0; i < rows; i++) {
-        free(arena[i]);
-    }
+void free_arena(char **arena, int rows) {
+    for (int i = 0; i < rows; i++) free(arena[i]);
     free(arena);
 }
 
-void initialize_arena(char **arena, int rows, int cols, const char *filename) {  // initializes the arena from the file
+void initialize_arena(char **arena, int rows, int cols, const char *filename) { 
     FILE *file = fopen(filename, "r");
     if (!file) {
         perror("fopen");
@@ -195,23 +463,59 @@ void print_arena(char **arena, int rows, int cols) {
     }
 }
 
+void initialize_game(char ***arena, int *rows, int *cols, int *player_x, int *player_y) {
+    
+    get_arena_dimensions(arena_files[current_arena], rows, cols);
+    *arena = create_arena(*rows, *cols); 
+    initialize_arena(*arena, *rows, *cols, arena_files[current_arena]);
+
+    for (int i = 0; i < *rows; i++) { // find the initial player position
+        for (int j = 0; j < *cols; j++) {
+            if ((*arena)[i][j] == 'p') {
+                *player_x = i;
+                *player_y = j;
+                return;
+            }
+        }
+    }
+}
+
 /*
     HANDLE FUNCTIONS
 */
+void print_gui(char **arena, int rows, int cols) {
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n"); 
+    print_arena(arena, rows, cols);    
+      
+    if (current_arena == 3) {  
+        handle_player_health(player_h); 
+        printf("\n= = = =\n");
+    }
+    else if (current_arena > 3){ 
+        handle_player_health(player_h);
+        handle_consumables(items); 
+    }
+}
+
 void handle_player_health(int health) {
     if (health >= 100) { // print player health with green for [100,+]
         printf("|"); printf("%sH%s", GREEN, RESET); printf(":");
         printf("%s%d%s", GREEN, health, RESET); printf("|");
     }
-    else if (health < 100 && health >= 70) { // // print player health with green [70,100]
+    else if (health < 100 && health >= 75) { // // print player health with green [75,100]
         printf("|"); printf("%sH%s", GREEN, RESET); printf(":");
         printf("%s0%d%s", GREEN, health, RESET); printf("|");
     }
-    else if (health < 70 && health >= 30) { // print player health with yellow for [30,70)
+    else if (health < 75 && health >= 50) { // print player health with yellow for [50,75)
         printf("|"); printf("%sH%s", YELLOW, RESET); printf(":");
         printf("%s0%d%s", YELLOW, health, RESET); printf("|");
     }
-    else if (health < 30 && health >= 10) { // print player health with red for [10,30)
+    else if (health < 50 && health >= 25) { // print player health with orange for [25,50)
+        printf("|"); printf("%sH%s", ORANGE, RESET); printf(":");
+        printf("%s0%d%s", ORANGE, health, RESET); printf("|");
+    }
+    else if (health < 25 && health >= 10) { // print player health with red for [10,25)
         printf("|"); printf("%sH%s", BRIGHT_RED, RESET); printf(":");
         printf("%s0%d%s", BRIGHT_RED, health, RESET); printf("|");
     }
@@ -225,12 +529,12 @@ void handle_player_health(int health) {
     }
 }
 
-void handle_consumables(char items[]){
+void handle_consumables(char items[]) { 
     for(int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
         if (items[i] != '\0'){ 
-            printf("%s[%s", YELLOW, RESET); printf("%s%c%s", GREEN, items[i], RESET); printf("%s]%s", YELLOW, RESET);
+            printf("%s[%s", ORANGE, RESET); printf("%s%c%s", GREEN, items[i], RESET); printf("%s]%s", ORANGE, RESET);
         }  
-        else printf("%s[ ]%s", YELLOW, RESET);  
+        else printf("%s[ ]%s", ORANGE, RESET);  
        
         if (i < MAX_INVENTORY_ITEMS) {
             printf("|");  
@@ -239,42 +543,27 @@ void handle_consumables(char items[]){
     printf("\n= = = = = = = = = =\n");
 }
 
-void handle_tutorials() {
+void handle_tutorials() { 
     char *arr = arena_files[current_arena];
     char last_char = arr[strlen(arr)-5];
             
     if(strstr(arena_files[current_arena],"tutorial")){
             
         switch(last_char){
-            case '0':
-                clear_console();
+            case '0': // tutorial about keys & doors
                 display_tutorial0();
-                getchar();
-                clear_console();
                 break;
-            case '1':
-                clear_console();
+            case '1': // tutorial about special keys and exit doors unlocking
                 display_tutorial1();
-                getchar();
-                clear_console();
                 break;
-            case '2':
-                clear_console();
+            case '2': // tutorial about spikes
                 display_tutorial2();
-                getchar();
-                clear_console();
                 break;
-            case '3':
-                clear_console();
+            case '3': // tutorial about health increase
                 display_tutorial3();
-                getchar();
-                clear_console();
                 break;
-            case '4':
-                clear_console();
+            case '4': // tutorial about holes
                 display_tutorial4();
-                getchar();
-                clear_console();
                 break;
             default: break;
         }
@@ -284,11 +573,20 @@ void handle_tutorials() {
 int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, int cols) {
     char input = getchar();
 
-    if (input == '\x1b') {  
+    if (input == '\t') { // if tab is pressed
+        is_paused = true;
+        int pause = display_pause_menu(); // call the pause menu function
+        if (pause) return 1; // if the user chooses to exit the game
+        else return 2; // return 2 in case he returns to the game
+    }
+    else if (input == '\x1b') {  // handling arrow keys
         input = getchar();
         if(input =='['){
             input = getchar();
-            if(input == 'D' || input == 'A' || input == 'B' || input == 'C') return 0;
+            if(input == 'D' || input == 'A' || input == 'B' || input == 'C') {
+                use_consumable = 1;
+                return 0;
+            }
         }
     }
   
@@ -309,47 +607,27 @@ int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, 
             if (*player_y < cols - 2 && arena[*player_x][*player_y + 1] != '=' && arena[*player_x][*player_y + 1] != '|' && arena[*player_x][*player_y + 1] != 'D' && arena[*player_x][*player_y + 1] != 'd') 
                 (*player_y)++;
             break;
-        case '\t': // exit by pressing tab
-            return 1;
-        case '1': // consumable 1
-            if(items[0] == '+') {
-                player_h += 15;
-                items[0] = '\0';
-                }
-            else if(items[0] == '^') {
-                weapon_flag = 1;
-                items[0] = '\0';
-            }
+        case '1': // inventory slot 1
+            handle_inventory_slot(&items[0]);
+            use_consumable = 1;
             break;
-        case '2': // consumable 2
-            if(items[1] == '+') {
-                player_h += 15;
-                items[1] = '\0';
-              
-                }
-            else if(items[1] == '^') {
-                weapon_flag = 1;
-                items[1] = '\0';
-            }
+        case '2': // inventory slot 2
+            handle_inventory_slot(&items[1]);
+            use_consumable = 1;
             break;
-        case '3': // consumable 3
-            if(items[2] == '+') {
-                player_h += 15;
-                items[2] = '\0';
-                }
-            else if(items[2] == '^') {
-                weapon_flag = 1;
-                items[2] = '\0';
-            }
+        case '3': // inventory slot 3
+            handle_inventory_slot(&items[2]);
+            use_consumable = 1;
             break;
         default:
+            use_consumable = 1;
             break;
     }
     
     return 0; 
 }
 
-int is_inventory_full(char items[]) {
+int is_inventory_full(char items[]) { 
     for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
         if (items[i] == '\0') {
             return 0; // inventory is not full
@@ -358,224 +636,275 @@ int is_inventory_full(char items[]) {
     return 1; // inventory is full
 }
 
-void initialize_game(const char *arena_file, char ***arena, int *rows, int *cols, int *player_x, int *player_y) {
-    
-    get_arena_dimensions(arena_file, rows, cols); // read the arena file and get he numbers of rows and cols
-    
-    *arena = create_arena(*rows, *cols); // allocate memory dinamically for the arena
-    
-    initialize_arena(*arena, *rows, *cols, arena_file);
-
-    for (int i = 0; i < *rows; i++) { // find the initial player position
-        for (int j = 0; j < *cols; j++) {
-            if ((*arena)[i][j] == 'p') {
-                *player_x = i;
-                *player_y = j;
-                return;
-            }
-        }
+void handle_inventory_slot(char *item_slot) {
+    if(*item_slot == '+') {
+        player_h += 15;
+        *item_slot = '\0';
+    }
+    else if(*item_slot == '^') {
+        weapon_flag = 1;
+        *item_slot = '\0';
     }
 }
 
-int main() {
+/*
+    RESET FUNCTIONS
+*/
+void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y) {
+    player_h = 100;
+    for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
 
-    signal(SIGINT, handle_sigint);
-    
-    atexit(cleanup);
+    free_arena(*arena, *rows); 
+    initialize_game(arena, rows, cols, player_x, player_y);
+}
 
-    int rows, cols;
+void reset_flags(int *spike_flag, int *exit_game, int *warrior_flag, int *next_arena, 
+                 int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole) {
+    *spike_flag = 0;
+    *exit_game = 0;
+    *warrior_flag = 0;
+    *next_arena = 0;
+    *over_health_consumable = 0;
+    *over_attack_consumable = 0;
+    *over_info = 0;
+    *over_small_hole = 0;
+}
 
-    const char *arena_file = arena_files[current_arena];
+/*
+    PATH FINDING
+*/
+Queue* create_queue() {
+    Queue *queue = (Queue*)malloc(sizeof(Queue));
+    queue->front = queue->rear = NULL;
+    return queue;
+}
 
-    char **arena;
+void enqueue(Queue *queue, Point point) {
+    Node *new_node = (Node*)malloc(sizeof(Node));
+    new_node->point = point;
+    new_node->next = NULL;
+    if (queue->rear == NULL) {
+        queue->front = queue->rear = new_node;
+        return;
+    }
+    queue->rear->next = new_node;
+    queue->rear = new_node;
+}
 
-    int player_x, player_y; // coordinates for player
+Point dequeue(Queue *queue) {
+    if (queue->front == NULL) {
+        exit(EXIT_FAILURE);
+    }
+    Node *temp = queue->front;
+    Point point = temp->point;
+    queue->front = queue->front->next;
+    if (queue->front == NULL) {
+        queue->rear = NULL;
+    }
+    free(temp);
+    return point;
+}
 
-    initialize_game(arena_file, &arena, &rows, &cols, &player_x, &player_y);
+int is_empty(Queue *queue) {
+    return queue->front == NULL;
+}
 
-    enable_raw_mode();
-    hide_cursor();
+void fighters_bfs(char **arena, int rows, int cols, int player_x, int player_y, int dist[rows][cols]) {
+    int visited[rows][cols];
 
-    char input; // stores keyboard input
-    
-    /* FLAGS */
-    int death_flag = 0;
-    int spike_flag = 0; 
-    int exit_game = 0;
-    int warrior_flag = 0;
-    int next_arena = 0; 
-
-    int over_health_consumable = 0; // flags for knowing when the player is on top of items
-    int over_attack_consumable = 0;
-    int over_info = 0;
-    int over_small_hole = 0;
-
-    while (!exit_game) { // game loop
-
-        clear_console(); // clear console after each iteration
-        printf("= = = = = = = = = = = =\n|"); printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
-        print_arena(arena, rows, cols);
-
-        handle_player_health(player_h);
-        handle_consumables(items);
-    
-        if(player_h <= 0) { // if health reaches 0 ~ death flag and break the loop
-            death_flag = 1;
-            clear_console(); // clear console after death
-            break; 
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            visited[i][j] = 0;
+            dist[i][j] = -1;  
         }
+    }
 
+    Queue *queue = create_queue();
+    enqueue(queue, (Point){player_x, player_y});
+    visited[player_x][player_y] = 1;
+    dist[player_x][player_y] = 0;
 
-        /* UPDATE ARENA CONSUMABLES AND TRAPS */
-        if(spike_flag){ // if the player is over a spike 'x' ~ after leaving that position the spike remains there
-            arena[player_x][player_y] = 'x'; 
-            spike_flag = 0;
-        }
-        else if (over_info) {
-            arena[player_x][player_y] = '!';  // same as for the spike
-            over_info = 0;
-        }
-        else if (over_small_hole) {
-            arena[player_x][player_y] = 'o'; // same as for the spike and info
-            over_small_hole = 0;
-        }
-        else if (over_attack_consumable) {    // if the player is over an attack increase consumable 
-            arena[player_x][player_y] = '^';  // and the inventory is full, the item remains on the ground 
-            over_attack_consumable = 0;
-        }
-        else if (over_health_consumable) {    // same as for the attack consumable
-            arena[player_x][player_y] = '+';
-            over_health_consumable = 0;
-        }
-        else arena[player_x][player_y] = ' '; // clear current player location
+    while (!is_empty(queue)) { // bfs
+        Point current = dequeue(queue);
 
+        for (int i = 0; i < 4; i++) {  // explore the 4 directions 
+            int new_row = current.row + row_dir[i];
+            int new_col = current.col + col_dir[i];
 
-        /* INPUT AND PLAYER INTERACTIONS */
-        exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);   
+            // check if new position is within bounds, walkable, and not visited
+            if (new_row >= 0 && new_row < rows && new_col >= 0 && new_col < cols &&
+                arena[new_row][new_col] != '|' && arena[new_row][new_col] != '=' && arena[new_row][new_col] != 'x' 
+                && arena[new_row][new_col] != 'O' && arena[new_row][new_col] != 'D' && arena[new_row][new_col] != 'd' &&
+                arena[new_row][new_col] != '#' && !visited[new_row][new_col]) {
 
-        if (arena[player_x][player_y] == 'x'){ // -30 health if the player is on top of a spike
-            player_h -= 30; 
-            spike_flag = 1; 
-        }
-
-        if (arena[player_x][player_y] == 'O'){ // fall in hole ~ instant death
-            death_flag = 1;
-            clear_console();
-            break; 
-        }
-
-        if (arena[player_x][player_y] == 'o'){ // touching a small hole ~ lose all your items
-            over_small_hole = 1;
-            for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                items[i] = '\0';
+                enqueue(queue, (Point){new_row, new_col});
+                visited[new_row][new_col] = 1;
+                dist[new_row][new_col] = dist[current.row][current.col] + 1;  // increment dist
             }
         }
+    }
 
+    free(queue);  
+}
 
-        if (arena[player_x][player_y] == 'w' && !weapon_flag){  // if player position = w position & the player has no weapon,
-            player_h -= 200;                                    // he dies, oth the warrior dies
-            warrior_flag = 1; 
-        }
-        
-        if (arena[player_x][player_y] == '+') {
-            if (player_h <= 15) { // auto use the health consumable if health is lower than 15
-                player_h += 15;
-            } 
-            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
-                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                    if (items[i] == '\0') {
-                        items[i] = '+';
-                        break;
+void move_fighters(char **arena, int rows, int cols, int player_x, int player_y) {
+    int dist[rows][cols];
+
+    fighters_bfs(arena, rows, cols, player_x, player_y, dist); // calculate distances from the player for each warrior
+
+    char new_arena[rows][cols];
+
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) new_arena[i][j] = arena[i][j];
+    }
+
+    int moved = 0;
+
+    for (int i = 0; i < rows; i++) { // calculate where 'w' go
+        for (int j = 0; j < cols; j++) {
+            if (arena[i][j] == 'w') {
+                int min_dist = dist[i][j];
+                int next_row = i, next_col = j;
+                int found_better_move = 0;
+
+                for (int d = 0; d < 4; d++) { // check all 4 possible directions
+                    int new_row = i + row_dir[d];
+                    int new_col = j + col_dir[d];
+
+                    if (new_row >= 0 && new_row < rows && new_col >= 0 && new_col < cols &&
+                        dist[new_row][new_col] != -1 && dist[new_row][new_col] < min_dist &&
+                        (arena[new_row][new_col] == ' ' || arena[new_row][new_col] == 'o' || arena[new_row][new_col] == '+' || 
+                        arena[new_row][new_col] == '^' || arena[new_row][new_col] == 'p')) {
+
+                        min_dist = dist[new_row][new_col];
+                        next_row = new_row;
+                        next_col = new_col;
+                        found_better_move = 1;
                     }
                 }
-            } 
-            else { // inventory is full ~ activate flag to let the item on the ground
-                over_health_consumable = 1;
-            }
-        }
 
-        if (arena[player_x][player_y] == '^') {
-            if (!is_inventory_full(items)) { // if the inventory is not full, add the item
-                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                    if (items[i] == '\0') {
-                        items[i] = '^';
-                        break;
+                if (found_better_move) {
+
+                    if (next_row == player_x && next_col == player_y && !weapon_flag) {
+                        death_flag = 1;
+                        return;  // exit when reaching the player
+                    }
+
+                    if (new_arena[next_row][next_col] == ' ' || new_arena[next_row][next_col] == 'o' || new_arena[next_row][next_col] == '+' ||
+                     new_arena[next_row][next_col] == '^' || arena[next_row][next_col] == 'p') {
+                        new_arena[next_row][next_col] = 'w';  
+                        new_arena[i][j] = ' ';  
+                        moved = 1;
                     }
                 }
-            } 
-            else { // inventory is full ~ activate flag to let the item on the ground
-                over_attack_consumable = 1;
             }
         }
+    }
 
-        if (arena[player_x][player_y] == '#') next_arena = 1; 
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) arena[i][j] = new_arena[i][j];    
+    }
+}
 
-        if (arena[player_x][player_y] == 'K') {
-            for (int i = 0; i < rows; i++) { // change 'D' to '#' and 'd' to ' ' after the key is picked
-                for (int j = 0; j < cols; j++) {
-                    if (arena[i][j] == 'D') arena[i][j] = '#';
-                    else if (arena[i][j] == 'd') arena[i][j] = ' ';
-                }
-            }
-        }
+/*
+    MENUS & MESSAGES
+*/
+void display_main_menu() {
+    while(1) {
+        clear_console();
+        printf("= = = = = = = = = = = =\n|"); 
+        printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+        printf("= = = = = = = = = = = =\n"); 
+        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Hello, User!    |\n"); 
+        printf("|"); printf(" %sI %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sN %s", CYAN, RESET); printf("| 1: New Game     |\n");
+        printf("|"); printf(" %s- %s", CYAN, RESET); printf("| 2: Exit Game    |\n");
+        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sU %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("= = = = = = = = = = = =\n");
 
-        if (arena[player_x][player_y] == 'k') {
-            for (int i = 0; i < rows; i++) { // change 'd' to ' ' after the key is picked
-                for (int j = 0; j < cols; j++) if (arena[i][j] == 'd') arena[i][j] = ' ';
-            }
-        }
-
-        if (arena[player_x][player_y] == '!') {
-            over_info = 1;
-            handle_tutorials(); // print tutorial message based on the current tutorial arena
-        }
-
-        /* LOAD NEXT ARENA */
-        if (next_arena){
-            current_arena++;  // move to the next arena
-            if (current_arena < num_arenas) {
-            
-                free_arena(arena, rows); // current area freed
-                get_arena_dimensions(arena_files[current_arena], &rows, &cols); // get dimentions for the next one
-                arena = create_arena(rows, cols); // dynamic allocate memory for next arena
-                initialize_arena(arena, rows, cols, arena_files[current_arena]); // init next arena
-
-                for (int i = 0; i < rows; i++) { // reset player position
-                    for (int j = 0; j < cols; j++) {
-                        if (arena[i][j] == 'p') {
-                            player_x = i;
-                            player_y = j;
-                            break;
-                        }
-                    }
-                }
-                next_arena = 0;  
-            } else {
-                clear_console(); // clear console after the last arena
+        char input;
+        input = getchar();
+        switch (input) {
+            case '1': 
+                start_game();
                 break;
-            }
+            case '2': 
+                display_exit_message();
+                char ext = getchar();
+                if (ext == 'y' || ext == 'Y') {
+                    clear_console();
+                    exit(EXIT_SUCCESS);
+                }
+                break;
+            default: break;
         }
-
-        arena[player_x][player_y] = 'p'; // update player location on the arena
-
-        if(warrior_flag) arena[player_x][player_y] = 'w'; // if 'w' kills 'p' he overrides the player on the map
-        else if (spike_flag && player_h <= 0) arena[player_x][player_y] = 'x'; // 'p' overrides a spike when he s on
-                                                                               // as long as he s not dead
     }
+}
+ 
+int display_pause_menu() {
+    while(1) {
+        clear_console();
+        printf("= = = = = = = = = = = =\n|"); 
+        printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+        printf("= = = = = = = = = = = =\n"); 
+        printf("|"); printf(" %sP %s", CYAN, RESET); printf("| ___             |\n");
+        printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Tab: Return to  |\n"); 
+        printf("|"); printf(" %sS %s", CYAN, RESET); printf("|      the arena  |\n");
+        printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n");
+        printf("|"); printf(" %s- %s", CYAN, RESET); printf("| Esc: Go to the  |\n");
+        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|      main menu  |\n");
+        printf("|"); printf(" %sE %s", CYAN, RESET); printf("| ___             |\n");
+        printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sU %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("= = = = = = = = = = = =\n");
 
-    free_arena(arena, rows);
-
-    clear_console();
-
-    if(death_flag) printf("GAME OVER!\n");
-    else if(next_arena) printf("YOU WON!\n");
-
-    return 0;
+        char input;
+        input = getchar();
+        switch (input) {
+            case '\t': 
+                clear_console();
+                is_paused = false;
+                return 0;
+            case '\x1B': 
+                display_exit_message();
+                char ext = getchar();
+                if (ext == 'y' || ext == 'Y') {
+                    clear_console();
+                    return 1;
+                }
+                break;
+            default: break;
+        }
+    }
 }
 
-void display_tutorial0(){ // tutorial message for the first tutorial arena
+void display_tutorial_movement() { // tutorial message for movement
+    clear_console(); 
     printf("= = = = = = = = = = = =\n|"); 
-    printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sW %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Use "); printf("%swasd%s", GREEN, RESET); printf(" (or    |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| uppercase "); printf("%sWASD%s", GREEN, RESET); printf(") |\n");
+    printf("|"); printf(" %sC %s", CYAN, RESET); printf("| to move the     |\n"); 
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| character!      |\n");
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n"); 
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n");
+    printf("|"); printf(" %s! %s", YELLOW, RESET); printf("| to continue ... |\n");
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_tutorial0() { // tutorial message for the first tutorial arena
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Sometimes paths |\n"); 
@@ -588,11 +917,14 @@ void display_tutorial0(){ // tutorial message for the first tutorial arena
     printf("| = |                 |\n"); printf("| = | Press any key   |\n");
     printf("| = | to continue ... |\n"); printf("| = |                 |\n"); 
     printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
 }
 
-void display_tutorial1(){ // tutorial message for the second tutorial arena
+void display_tutorial1() { // tutorial message for the second tutorial arena
+    clear_console(); 
     printf("= = = = = = = = = = = =\n|"); 
-    printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sU %s", CYAN, RESET); printf("| If the arena    |\n"); 
@@ -606,11 +938,36 @@ void display_tutorial1(){ // tutorial message for the second tutorial arena
     printf("| = | path doors ("); printf("%sd%s", DARK_GRAY, RESET); printf("). |\n"); printf("| = |                 |\n");
     printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
 }
 
-void display_tutorial2(){ // tutorial message for the third tutorial arena
+void display_tutorial_health() { // tutorial message for the health system
+    clear_console(); 
     printf("= = = = = = = = = = = =\n|"); 
-    printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%sHEALTH SYSTEM%s", YELLOW, RESET); printf("   |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n"); 
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|  = = = =        |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|  |"); printf("%sH:100%s", GREEN, RESET); printf("|        |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  = = = =        |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| Enemies and     |\n");
+    printf("| = | traps reduce    |\n"); printf("| = | your health.    |\n");
+    printf("| = |                 |\n"); printf("| = | If it hits "); printf("%s0%s", RED, RESET); printf(",   |\n");
+    printf("| = | you'll "); printf("%sdie!%s", RED, RESET); printf("     |\n"); printf("| = |                 |\n");
+    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_tutorial2() { // tutorial message for the third tutorial arena
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sU %s", CYAN, RESET); printf("| If you step on  |\n"); 
@@ -624,11 +981,41 @@ void display_tutorial2(){ // tutorial message for the third tutorial arena
     printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
     printf("| = | to continue ... |\n"); printf("| = |                 |\n"); 
     printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
 }
 
-void display_tutorial3(){ // tutorial message for the fourth tutorial arena
+void display_tutorial_inventory() { // tutorial message for the inventory system
+    clear_console(); 
     printf("= = = = = = = = = = = =\n|"); 
-    printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%sITEMS &        %s", YELLOW, RESET); printf(" |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| "); printf("%sINVENTORY      %s", YELLOW, RESET); printf(" |\n"); 
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|  = = = = = = =  |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  |"); printf("%s[%s", ORANGE, RESET); printf("%s1%s", GREEN, RESET); 
+        printf("%s]%s", ORANGE, RESET); printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s2%s", GREEN, RESET); printf("%s]%s", ORANGE, RESET); 
+        printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s3%s", GREEN, RESET); printf("%s]%s", ORANGE, RESET);  printf("|  |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|  = = = = = = =  |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("|                 |\n");
+    printf("| = | Items help you  |\n"); printf("| = | get through the |\n");
+    printf("| = | the arenas more |\n"); printf("| = | easily.         |\n");
+    printf("| = |                 |\n"); printf("| = | Use them by     |\n"); 
+    printf("| = | pressing "); printf("%s1%s", GREEN, RESET); printf(", "); printf("%s2%s", GREEN, RESET); printf("   |\n");
+    printf("| = | or "); printf("%s3%s", GREEN, RESET); printf(" for their  |\n"); 
+    printf("| = | corresponding   |\n"); printf("| = | inventory slot. |\n");
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_tutorial3() { // tutorial message for the fourth tutorial arena
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Your health is  |\n"); 
@@ -645,11 +1032,14 @@ void display_tutorial3(){ // tutorial message for the fourth tutorial arena
     printf("| = | the inventory!  |\n"); printf("| = |                 |\n"); 
     printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
 }
 
-void display_tutorial4(){ // tutorial message for the fifth tutorial arena
+void display_tutorial4() { // tutorial message for the fifth tutorial arena
+    clear_console(); 
     printf("= = = = = = = = = = = =\n|"); 
-    printf(" %s  _TEXT_ADVENTURE_  %s", YELLOW, RESET); printf("|\n");
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Be carefull!!!  |\n"); 
@@ -666,4 +1056,126 @@ void display_tutorial4(){ // tutorial message for the fifth tutorial arena
     printf("| = | "); printf("%slost%s", RED, RESET); printf(" :)         |\n"); printf("| = |                 |\n"); 
     printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
 }
+
+void display_tutorial_fail() { // message displayed when the tutorial is failed 
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| to restart this |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| tutorial arena  |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| ...             |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("|                 |\n"); 
+    printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_spike_death() { // death message for spikes
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| An ordinary     |\n"); 
+    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| spike took your |\n");
+    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| life :)         |\n");
+    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| and return back |\n"); 
+    printf("| = | to the main     |\n"); printf("| = | menu ...        |\n"); 
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_hole_death() { // death message for holes
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| It looks like   |\n"); 
+    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| you fell into a |\n");
+    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| very big hole!  |\n");
+    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| and return back |\n"); 
+    printf("| = | to the main     |\n"); printf("| = | menu ...        |\n"); 
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_warrior_death() { // death message for warriors
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Warriors are    |\n"); 
+    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| hard to defeat  |\n");
+    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| if you are not  |\n");
+    printf("|"); printf(" %sV %s", CYAN, RESET); printf("| skilled!        |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n"); 
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| Press any key   |\n"); 
+    printf("| = | and return back |\n"); printf("| = | to the main     |\n"); 
+    printf("| = | menu ...        |\n"); printf("| = |                 |\n"); 
+    printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+void display_exit_message() { // message displayed when exiting the game
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Are you sure    |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| about leaving   |\n");
+    printf("|"); printf(" %sN %s", CYAN, RESET); printf("| the game?  "); printf("%s:(%s", YELLOW, RESET); printf("   |\n");
+    printf("|"); printf(" %s- %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sM %s", CYAN, RESET); printf("| Press "); printf("%sY%s", RED, RESET); printf(" or "); printf("%sy%s", RED, RESET); printf(" to |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| "); printf("%sexit%s", RED, RESET); printf(" the game.  |\n");
+    printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Press any other |\n"); 
+    printf("| = | key to ");  printf("%sstay%s", GREEN, RESET); printf(" ... |\n");
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+}
+
+void display_win() { // message displayed when finishing all arenas
+    clear_console(); 
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| "); printf("%sCONGRATULATIONS%s", GREEN, RESET); printf(" |\n");
+    printf("|"); printf(" %sC %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| You completed   |\n"); 
+    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| all the arenas! |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sY %s", CYAN, RESET); printf("| Thank you for   |\n");
+    printf("|"); printf(" %s! %s", YELLOW, RESET); printf("| playing "); printf("%sv.1.0%s", YELLOW, RESET); printf("   |\n"); 
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
+    printf("| = | and return back |\n"); printf("| = | to the main     |\n"); 
+    printf("| = | menu ...        |\n"); printf("| = |                 |\n"); 
+    printf("= = = = = = = = = = = =\n");
+    getchar(); 
+    clear_console();
+}
+
+
