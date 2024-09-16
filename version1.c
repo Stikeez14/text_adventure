@@ -7,22 +7,21 @@
 #include <stdbool.h>
 
 #define MAX_LINE_LENGTH 1024
+#define MAX_PATH_LENGTH 128
 
 #define RESET "\033[0m"
-
 #define RED "\033[31m"
-#define CYAN "\033[36m"
+#define BRIGHT_RED "\x1b[38;5;196m"
 #define GREEN "\033[32m"
+#define BRIGHT_GREEN "\033[1;92m"
+#define ORANGE "\x1b[38;5;214m"
+#define LIGHT_ORANGE "\033[38;5;230m"
+#define CYAN "\033[36m"
 #define YELLOW "\033[33m"
 #define DARK_GRAY "\x1b[90m"
-#define ORANGE "\x1b[38;5;214m"
 #define PURPLE "\033[35m"
 
-#define BRIGHT_GREEN "\033[1;92m"
-#define BRIGHT_RED "\x1b[38;5;196m"
-
 #define MAX_INVENTORY_ITEMS 3
-
 #define MAX_HEATH 115 
 
 typedef struct {
@@ -45,31 +44,24 @@ typedef struct Queue {
 */
 int player_h = 100;
 char items[MAX_INVENTORY_ITEMS] = {'\0','\0','\0'};
+int score = 0;
+int coins = 0;
 
 char **arena_files = NULL;
 int current_arena = 0;  // keeps track of the current arena level
 int num_arenas;
 
 bool is_paused = false; // used for the pause menu
-bool played_tutorial = false;
+bool played_tutorial = false; // used for knowing if the tutorial is played
 
-int death_flag = 0;
+int death_flag = 0; 
 int weapon_flag = 0;
-int block_input = 0;
+int block_input = 0; 
 
 int exit_arena = 0; // counts how many enemies and exit keys are required to open the door
 
 int row_dir[] = {-1, 1, 0, 0};
 int col_dir[] = {0, 0, -1, 1};
-
-
-void set_arena_files(char **files, int count) {
-    if (arena_files != NULL) free(arena_files);  // free old arena files if exist
-
-    arena_files = (char **)malloc(count * sizeof(char *)); // allocate memory dynamically based on the count of files
-    for (int i = 0; i < count; i++) arena_files[i] = files[i];
-    num_arenas = count;  // set the number of arenas
-}
 
 /*
     FUNCTION PROTOTYPES 
@@ -82,18 +74,21 @@ void free_arena(char **arena, int rows); // frees the allocated memory
 void initialize_arena(char **arena, int rows, int cols, const char *filename); // initializes the arena from the file
 void print_arena(char **arena, int rows, int cols); 
 void initialize_game(char ***arena, int *rows, int *cols, int *player_x, int *player_y); // dimensions + create + init + player position
+void set_arena_files(char **files, int count); // allocates memory for arena files
 
 void print_gui(char **arena, int rows, int cols); // gui + game window
-void handle_player_health(int health); // prints player health
-void handle_consumables(char items[]); // prints the invetory and items
+void print_player_health(int health); // prints player health
+void print_inventory(char items[]); // prints the invetory and items
+void handle_highscore_coins(int score, int coins); // prints highscore & collected coins
 void handle_tutorials(); // displays the right tutorial based on the arena
 int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, int cols); // takes keyboard inputs
 int is_inventory_full(char items[]); 
-void handle_inventory_slot(char *item_slot); 
+void handle_inventory_slot(char *item_slot);  // activates the consumables
 void handle_arena_exit(char **arena, int rows, int cols); // unlocks the door after collecting the key + eliminating all threats
+void handle_consumable(char consumable, int *flag, int player_x, int player_y, char **arena); // helper function for checking which consumable is picked
 
 void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y);
-void reset_flags(int *spike_flag, int *exit_game, int *death_flag, int *weapon_flag,
+void reset_flags(int *over_spike, int *exit_game, int *death_flag, int *weapon_flag,
                 int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole);
 
 Queue* create_queue();
@@ -202,12 +197,13 @@ void start_game() {
     
     char input; // stores keyboard input
     
-    // flags
-    int spike_flag = 0; 
+    // flag for stoping the loop
     int exit_game = 0;
-
-    int over_health_consumable = 0; // flags for knowing when the player is on top of items
+    // flags for knowing when the player is on top of items
+    int over_spike = 0;
+    int over_health_consumable = 0; 
     int over_attack_consumable = 0;
+    int over_defense_consumable = 0;
     int over_info = 0;
     int over_small_hole = 0;
 
@@ -221,23 +217,27 @@ void start_game() {
         block_input = 0;
     
         /* UPDATE ARENA CONSUMABLES AND TRAPS */
-        if(spike_flag) { // if the player is over a spike 'x' ~ after leaving that position the spike remains there
+        if(over_spike) { // if the player is over these characters  ~ after leaving that position they remain there
             arena[player_x][player_y] = 'x'; 
-            spike_flag = 0;
+            over_spike = 0;
         }
         else if (over_info) {
-            arena[player_x][player_y] = '!';  // same as for the spike
+            arena[player_x][player_y] = '!';  
             over_info = 0;
         }
         else if (over_small_hole) {
-            arena[player_x][player_y] = 'o'; // same as for the spike and info
+            arena[player_x][player_y] = 'o';
             over_small_hole = 0;
         }
-        else if (over_attack_consumable) {    // if the player is over an attack increase consumable 
-            arena[player_x][player_y] = '^';  // and the inventory is full, the item remains on the ground 
+        else if (over_attack_consumable) {    
+            arena[player_x][player_y] = '^';  
             over_attack_consumable = 0;
         }
-        else if (over_health_consumable) {    // same as for the attack consumable
+        else if (over_defense_consumable) {
+            arena[player_x][player_y] = '(';
+            over_defense_consumable = 0;
+        }
+        else if (over_health_consumable) {    
             arena[player_x][player_y] = '+';
             over_health_consumable = 0;
         }
@@ -246,30 +246,31 @@ void start_game() {
         /* INPUT AND PLAYER INTERACTIONS */
         if (!death_flag) exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);
         if (exit_game) {
-            current_arena = 0;
+            current_arena = 0; 
+            reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
             continue;   // if the user leaves the game, skip the rest of the loop
-            }
+        }
 
         if (arena[player_x][player_y] == 'x') { // -30 health if the player is on top of a spike
             if (!block_input) player_h -= 30; 
-            spike_flag = 1; 
+            over_spike = 1; 
         }
 
         if ((arena[player_x][player_y] == 'w' || death_flag) && !weapon_flag) { // if player position = w position & the player has no weapon,
-            player_h -= 200; 
-            death_flag = 1;                                                    // he dies, oth the warrior dies
+            player_h -= 200;                                                    // he dies, oth the warrior dies
+            death_flag = 1;                                                    
         }
 
         if (player_h <= 0 && (strstr(arena_files[current_arena], "arena") || strstr(arena_files[current_arena], "test"))) { // if health reaches 0 ~ death flag and break the loop
             current_arena = 0;
-            if (spike_flag) display_spike_death();
+            if (over_spike) display_spike_death();
             else if (death_flag) display_warrior_death(); 
-            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
             break; 
         }
         else if (player_h <= 0 && strstr(arena_files[current_arena], "tutorial")) {
-            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
             display_tutorial_fail();
             continue; // skip this game loop iteration
@@ -277,13 +278,13 @@ void start_game() {
 
         if (arena[player_x][player_y] == 'O' && (strstr(arena_files[current_arena], "arena") || strstr(arena_files[current_arena], "test"))) { // fall in hole ~ instant death
             current_arena = 0;
-            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
             display_hole_death();
             break; 
         }
         else if (arena[player_x][player_y] == 'O' && strstr(arena_files[current_arena], "tutorial")) {
-            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
             display_tutorial_fail();
             continue; // skip this game loop iteration
@@ -294,30 +295,9 @@ void start_game() {
             for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
         }
         
-        if (arena[player_x][player_y] == '+') {
-            if (player_h <= 15) player_h += 15; // auto use the health consumable if health is lower than 15
-            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
-                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                    if (items[i] == '\0') {
-                        items[i] = '+';
-                        break;
-                    }
-                }
-            } 
-            else over_health_consumable = 1; // inventory is full ~ activate flag to let the item on the ground
-        }
-
-        if (arena[player_x][player_y] == '^') {
-            if (!is_inventory_full(items)) { // if the inventory is not full, add the item
-                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                    if (items[i] == '\0') {
-                        items[i] = '^';
-                        break;
-                    }
-                }
-            } 
-            else over_attack_consumable = 1;  // inventory is full ~ activate flag to let the item on the ground
-        }
+        handle_consumable('+', &over_health_consumable, player_x, player_y, arena);
+        handle_consumable('^', &over_attack_consumable, player_x, player_y, arena);
+        handle_consumable(')', &over_defense_consumable, player_x, player_y, arena); 
 
         if (arena[player_x][player_y] == 'k' || arena[player_x][player_y] == 'K') {
             for (int i = 0; i < rows; i++) { // change 'd' to ' ' after the key is picked
@@ -330,10 +310,13 @@ void start_game() {
             if (!block_input) handle_tutorials(); // print tutorial message based on the current tutorial arena
         }
 
+        if (arena[player_x][player_y] == 'c') { coins++; score += 50; }
+
         if (!block_input) move_fighters(arena, rows, cols, player_x, player_y);
   
         /* LOAD NEXT ARENA */
         if (arena[player_x][player_y] == '#') {
+            score += 200;
             if (current_arena + 1 < num_arenas) { // check if next arena is valid
                 current_arena++;  // move to the next arena
 
@@ -341,19 +324,21 @@ void start_game() {
                 else if (current_arena == 4 && played_tutorial) display_tutorial_inventory(); // display items & inventory tutorial
 
                 if(strstr(arena_files[current_arena], "tutorial") || strstr(arena_files[current_arena], "welcome")) {
-                    player_h = 100;
+                    player_h = 100; coins = 0; score = 0;
                     for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
                 }
 
+                reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
                 free_arena(arena, rows); // current area freed
                 initialize_game(&arena, &rows, &cols, &player_x, &player_y); // initialize the next arena
             } 
             else { // last arena
                 current_arena = 0;
                 display_win(); // win message after the last arena
-                reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+                reset_flags(&over_spike, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
                 player_h = 100;
                 for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
+                coins = 0; score = 0;
                 break;
             }
         }
@@ -369,7 +354,10 @@ void start_game() {
     ARENA FUNCTIONS
 */
 void get_arena_dimensions(const char *file_name, int *rows, int *cols) { 
-    FILE *fp = fopen(file_name, "r");
+    char path[MAX_PATH_LENGTH];
+    snprintf(path, sizeof(path), "pre_build_arenas/%s", file_name);
+
+    FILE *fp = fopen(path, "r");
     if (!fp) {
         perror("fopen");
         exit(EXIT_FAILURE);
@@ -414,16 +402,19 @@ void free_arena(char **arena, int rows) {
     free(arena);
 }
 
-void initialize_arena(char **arena, int rows, int cols, const char *filename) { 
-    FILE *file = fopen(filename, "r");
-    if (!file) {
+void initialize_arena(char **arena, int rows, int cols, const char *file_name) { 
+    char path[MAX_PATH_LENGTH];
+    snprintf(path, sizeof(path), "pre_build_arenas/%s", file_name);
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
         perror("fopen");
         exit(EXIT_FAILURE);
     }
     
     char line[MAX_LINE_LENGTH];
     for (int i = 0; i < rows; i++) {
-        if (fgets(line, sizeof(line), file)) {
+        if (fgets(line, sizeof(line), fp)) {
             int length = strcspn(line, "\n");
             for (int j = 0; j < cols; j++) {
                 if (j < length) {
@@ -440,7 +431,7 @@ void initialize_arena(char **arena, int rows, int cols, const char *filename) {
         }
     }
 
-    fclose(file);
+    fclose(fp);
 }
 
 void print_arena(char **arena, int rows, int cols) { 
@@ -449,8 +440,8 @@ void print_arena(char **arena, int rows, int cols) {
             if (arena[i][j] == 'w') printf("%s%c %s", BRIGHT_RED, arena[i][j], RESET); // enemies ~ BRIGHT_RED
             else if (arena[i][j] == 'x' || arena[i][j] == 'O' || arena[i][j] == 'o') printf("%s%c %s", RED, arena[i][j], RESET); // traps ~ RED)
             else if (arena[i][j] == '#' || arena[i][j] == 'K' || arena[i][j] == 'k' || arena[i][j] == '!' || arena[i][j] == '~' || 
-                arena[i][j] == '<' || arena[i][j] == '>') printf("%s%c %s", YELLOW, arena[i][j], RESET); // exit ~ YELLOW
-            else if (arena[i][j] == '+' || arena[i][j] == '^') printf("%s%c %s", GREEN, arena[i][j], RESET); // consumables ~ GREEN
+                arena[i][j] == '<' || arena[i][j] == '>' || arena[i][j] == 'c' || arena[i][j] == '$') printf("%s%c %s", YELLOW, arena[i][j], RESET); // exit ~ YELLOW
+            else if (arena[i][j] == '+' || arena[i][j] == '^' || arena[i][j] == ')') printf("%s%c %s", GREEN, arena[i][j], RESET); // consumables ~ GREEN
             else if (arena[i][j] == 'p' || arena[i][j] == '0' || arena[i][j] == '1' || arena[i][j] == '2' || 
                 arena[i][j] == '3' || arena[i][j] == '4' || arena[i][j] == '5' || arena[i][j] == '6' || arena[i][j] == '7' || 
                 arena[i][j] == '8' || arena[i][j] == '9' || arena[i][j] == 'A' || arena[i][j] == 'R' || arena[i][j] == 'E' || 
@@ -481,33 +472,41 @@ void initialize_game(char ***arena, int *rows, int *cols, int *player_x, int *pl
     }
 }
 
+void set_arena_files(char **files, int count) {
+    if (arena_files != NULL) free(arena_files);  // free old arena files if exist
+
+    arena_files = (char **)malloc(count * sizeof(char *)); // allocate memory dynamically based on the count of files
+    for (int i = 0; i < count; i++) arena_files[i] = files[i];
+    num_arenas = count;  // set the number of arenas
+}
+
 /*
     HANDLE FUNCTIONS
 */
 void print_gui(char **arena, int rows, int cols) {
     clear_console(); 
-    printf("= = = = = = = = = = = =\n|"); printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n"); 
+    printf("= = = = = = = = = = = =\n|"); 
+
+    handle_highscore_coins(score, coins);
     print_arena(arena, rows, cols);    
       
-    if (played_tutorial) {
+    if (played_tutorial) { 
         if (current_arena == 3) {  
-            handle_player_health(player_h); 
+            print_player_health(player_h); 
             printf("\n= = = =\n");
         }
         else if (current_arena > 3){ 
-            handle_player_health(player_h);
-            handle_consumables(items); 
+            print_player_health(player_h);
+            print_inventory(items); 
         }  
     }
     else {
-        if (current_arena > 0) {
-            handle_player_health(player_h);
-            handle_consumables(items); 
-        }
+        print_player_health(player_h);
+        print_inventory(items); 
     } 
 }
 
-void handle_player_health(int health) {
+void print_player_health(int health) {
     if (health >= 100) { // print player health with green for [100,+]
         printf("|"); printf("%sH%s", GREEN, RESET); printf(":");
         printf("%s%d%s", GREEN, health, RESET); printf("|");
@@ -525,23 +524,23 @@ void handle_player_health(int health) {
         printf("%s0%d%s", ORANGE, health, RESET); printf("|");
     }
     else if (health < 25 && health >= 10) { // print player health with red for [10,25)
-        printf("|"); printf("%sH%s", BRIGHT_RED, RESET); printf(":");
-        printf("%s0%d%s", BRIGHT_RED, health, RESET); printf("|");
+        printf("|"); printf("%sH%s", RED, RESET); printf(":");
+        printf("%s0%d%s", RED, health, RESET); printf("|");
     }
     else if (health < 10 && health >= 1) { // print player health with red for [1,10)
-        printf("|"); printf("%sH%s", BRIGHT_RED, RESET); printf(":");
-        printf("%s00%d%s", BRIGHT_RED, health, RESET); printf("|");
+        printf("|"); printf("%sH%s", RED, RESET); printf(":");
+        printf("%s00%d%s", RED, health, RESET); printf("|");
     }
     else { // print player health with red for (-,0]
-        printf("|"); printf("%sH%s", BRIGHT_RED, RESET); printf(":");
-        printf("%s000%s", BRIGHT_RED, RESET); printf("|");
+        printf("|"); printf("%sH%s", RED, RESET); printf(":");
+        printf("%s000%s", RED, RESET); printf("|");
     }
 }
 
-void handle_consumables(char items[]) { 
+void print_inventory(char items[]) { 
     for(int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
         if (items[i] != '\0'){ 
-            printf("%s[%s", ORANGE, RESET); printf("%s%c%s", GREEN, items[i], RESET); printf("%s]%s", ORANGE, RESET);
+            printf("%s[%s", ORANGE, RESET); printf("%s%c%s", LIGHT_ORANGE, items[i], RESET); printf("%s]%s", ORANGE, RESET);
         }  
         else printf("%s[ ]%s", ORANGE, RESET);  
        
@@ -549,7 +548,49 @@ void handle_consumables(char items[]) {
             printf("|");  
         }
     }
-    printf("\n= = = = = = = = = =\n");
+    // temporary ability that will be implemented in the future
+    printf("%s{%s", ORANGE, RESET); printf("%s#%s", LIGHT_ORANGE, RESET); printf("%s}%s", ORANGE, RESET); printf("|");  
+    printf("\n= = = = = = = = = = = =\n");
+}
+
+void handle_highscore_coins(int score, int coins) {
+    printf("%sHIGHSCORE%s", ORANGE, RESET); printf(":"); 
+    if (!score) {
+        printf("%s000000%s", LIGHT_ORANGE, RESET); printf("|"); 
+    } 
+    else if (score > 0 && score < 10) {
+        printf("%s00000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    }
+    else if (score >= 10 && score < 100) {
+        printf("%s0000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    }
+    else if (score >= 100 && score < 1000) {
+        printf("%s000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    } 
+    else if (score >= 1000 && score < 10000) {
+        printf("%s00%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    }
+    else if (score >= 10000 && score < 100000) {
+        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    }
+    else {
+        printf("%s99999%s", ORANGE, RESET); printf("|");
+    }
+
+    // displaying total coins
+    printf("%s$%s", ORANGE, RESET); printf(":");
+    if(!coins) { 
+        printf("%s00%s", LIGHT_ORANGE, RESET); printf("|\n"); 
+    }
+    else if(coins > 0 && coins < 10) { 
+        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, coins, RESET); printf("|\n");
+    }
+    else if(coins >= 10 && coins < 100) { 
+        printf("%s%d%s", ORANGE, coins, RESET); printf("|\n"); 
+    }
+    else { 
+        printf("%s99%s", ORANGE, RESET); printf("|\n"); 
+    }
 }
 
 void handle_tutorials() { 
@@ -655,6 +696,10 @@ void handle_inventory_slot(char *item_slot) {
         weapon_flag = 1;
         *item_slot = '\0';
     }
+    else if(*item_slot == ')') {
+        weapon_flag = 1;
+        *item_slot = '\0';
+    }
 }
 
 void handle_arena_exit(char **arena, int rows, int cols) {
@@ -668,20 +713,38 @@ void handle_arena_exit(char **arena, int rows, int cols) {
         }
     }
 }
+
+void handle_consumable(char consumable, int *flag, int player_x, int player_y, char **arena) {
+    if (arena[player_x][player_y] == consumable) {
+            if (consumable =='+' && player_h <= 15) player_h += 15; // auto use the health consumable if health is lower than 15
+            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                    if (items[i] == '\0') {
+                        items[i] = consumable;
+                        break;
+                    }
+                }
+            } 
+            else *flag = 1; // inventory is full ~ activate flag to let the item on the ground
+        }
+}
+
 /*
     RESET FUNCTIONS
 */
 void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y) {
     player_h = 100;
     for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
+    coins = 0;
+    score = 0;
 
     free_arena(*arena, *rows); 
     initialize_game(arena, rows, cols, player_x, player_y);
 }
 
-void reset_flags(int *spike_flag, int *exit_game, int *death_flag, int *weapon_flag,
+void reset_flags(int *over_spike, int *exit_game, int *death_flag, int *weapon_flag,
                 int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole) {
-    *spike_flag = 0;
+    *over_spike = 0;
     *exit_game = 0;
     *death_flag = 0;
     *weapon_flag = 0;
@@ -857,7 +920,7 @@ void display_main_menu() {
                     played_tutorial = true;
                     clear_console();
                     char *tutorial_files[] = { "welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
-                        "arena0.txt", "arena1.txt", "arena2.txt"};
+                        "tutorial5.txt", "arena0.txt", "arena1.txt", "arena2.txt"};
                     int count = sizeof(tutorial_files) / sizeof(tutorial_files[0]);
                     set_arena_files(tutorial_files, count);
                     start_game();
