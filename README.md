@@ -3,20 +3,22 @@ A simple terminal-based game written in C
 
 ## ROADMAP
 ### v1: 
-- 5 pre-built arenas
-- Enemies & pathfinding
-- Attack & defense mechanics
+- 20 Pre-Built Arenas
+- Traps & Enemies
+- Attack & Defense Mechanics
 - Health System
-- Items & inventory system
+- Items & Inventory System
+- Tutorials & Main Menu
 ### v2:
-- Saving system
-- Tutorial & main menu
-- Random map generation
-- Game settings
+- Saving System
+- Random Arena Generation
+- Game Settings
 - Shop NPC
+- Boss Battles
+- Mini-Quests
+- Achievements System
 ### v3:
-- Mini-quests
-- Boss battles
-- Resource gathering
-- Building mechanics
-- Buffs
+- New Survival Game Mode
+- Resource Gathering
+- Building Mechanics
+- Story Progression
