@@ -9,15 +9,21 @@
 #define MAX_LINE_LENGTH 1024
 
 #define RESET "\033[0m"
+
 #define RED "\033[31m"
 #define CYAN "\033[36m"
 #define GREEN "\033[32m"
 #define YELLOW "\033[33m"
 #define DARK_GRAY "\x1b[90m"
-#define BRIGHT_RED "\x1b[38;5;196m"
 #define ORANGE "\x1b[38;5;214m"
+#define PURPLE "\033[35m"
+
+#define BRIGHT_GREEN "\033[1;92m"
+#define BRIGHT_RED "\x1b[38;5;196m"
 
 #define MAX_INVENTORY_ITEMS 3
+
+#define MAX_HEATH 115 
 
 typedef struct {
     int row;
@@ -40,23 +46,30 @@ typedef struct Queue {
 int player_h = 100;
 char items[MAX_INVENTORY_ITEMS] = {'\0','\0','\0'};
 
-//char *arena_files[] = {"welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
-//"arena0.txt", "arena1.txt", "arena2.txt"};
-
-char *arena_files[] = {"welcome.txt", "arena1.txt"};
+char **arena_files = NULL;
 int current_arena = 0;  // keeps track of the current arena level
-int num_arenas = sizeof(arena_files) / sizeof(arena_files[0]);
+int num_arenas;
 
 bool is_paused = false; // used for the pause menu
-int warrior_flag = 0;
+bool played_tutorial = false;
+
 int death_flag = 0;
 int weapon_flag = 0;
-int use_consumable = 0;
+int block_input = 0;
+
+int exit_arena = 0; // counts how many enemies and exit keys are required to open the door
 
 int row_dir[] = {-1, 1, 0, 0};
 int col_dir[] = {0, 0, -1, 1};
 
-void clear_console();
+
+void set_arena_files(char **files, int count) {
+    if (arena_files != NULL) free(arena_files);  // free old arena files if exist
+
+    arena_files = (char **)malloc(count * sizeof(char *)); // allocate memory dynamically based on the count of files
+    for (int i = 0; i < count; i++) arena_files[i] = files[i];
+    num_arenas = count;  // set the number of arenas
+}
 
 /*
     FUNCTION PROTOTYPES 
@@ -77,10 +90,11 @@ void handle_tutorials(); // displays the right tutorial based on the arena
 int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, int cols); // takes keyboard inputs
 int is_inventory_full(char items[]); 
 void handle_inventory_slot(char *item_slot); 
+void handle_arena_exit(char **arena, int rows, int cols); // unlocks the door after collecting the key + eliminating all threats
 
 void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y);
-void reset_flags(int *spike_flag, int *exit_game, int *warrior_flag, int *next_arena, 
-    int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole);
+void reset_flags(int *spike_flag, int *exit_game, int *death_flag, int *weapon_flag,
+                int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole);
 
 Queue* create_queue();
 void enqueue(Queue *queue, Point point);
@@ -105,6 +119,7 @@ void display_hole_death();
 void display_warrior_death();
 void display_exit_message();
 void display_win();
+void ask_about_tutorial();
 
 /* 
     RAW MODE FOR INPUT, CONSOLE CLEAR, TERMINAL CURSOR & UNEXPECTED EXITS
@@ -183,28 +198,27 @@ void start_game() {
 
     initialize_game(&arena, &rows, &cols, &player_x, &player_y);
 
-    if(!current_arena) display_tutorial_movement();
+    if(!current_arena && played_tutorial) display_tutorial_movement();
     
     char input; // stores keyboard input
     
     // flags
     int spike_flag = 0; 
     int exit_game = 0;
-    int next_arena = 0; 
 
     int over_health_consumable = 0; // flags for knowing when the player is on top of items
     int over_attack_consumable = 0;
     int over_info = 0;
     int over_small_hole = 0;
 
-    int after_pause = 0;
-
     while (!exit_game) { 
+
+        exit_arena = 0;
+        handle_arena_exit(arena, rows, cols); // unlock exit door if all threats are eliminated
 
         print_gui(arena, rows, cols); // game window + gui
 
-        after_pause = 0;
-        use_consumable = 0;
+        block_input = 0;
     
         /* UPDATE ARENA CONSUMABLES AND TRAPS */
         if(spike_flag) { // if the player is over a spike 'x' ~ after leaving that position the spike remains there
@@ -230,49 +244,46 @@ void start_game() {
         else arena[player_x][player_y] = ' '; // clear current player location 
     
         /* INPUT AND PLAYER INTERACTIONS */
-        if(!death_flag) exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);
-
-        if (exit_game == 2) { // if the user paused the game & decides to continue playing
-            after_pause = 1;  // update flag
-            exit_game = 0;
-        } 
-        else if (exit_game) continue; // if the user leaves the game, skip the rest of the loop
+        if (!death_flag) exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);
+        if (exit_game) {
+            current_arena = 0;
+            continue;   // if the user leaves the game, skip the rest of the loop
+            }
 
         if (arena[player_x][player_y] == 'x') { // -30 health if the player is on top of a spike
-            if (!after_pause && !use_consumable) player_h -= 30; 
+            if (!block_input) player_h -= 30; 
             spike_flag = 1; 
         }
 
         if ((arena[player_x][player_y] == 'w' || death_flag) && !weapon_flag) { // if player position = w position & the player has no weapon,
-            player_h -= 200;                                    // he dies, oth the warrior dies
-            warrior_flag = 1; 
+            player_h -= 200; 
+            death_flag = 1;                                                    // he dies, oth the warrior dies
         }
 
-        if (player_h <= 0 && strstr(arena_files[current_arena], "arena")) { // if health reaches 0 ~ death flag and break the loop
+        if (player_h <= 0 && (strstr(arena_files[current_arena], "arena") || strstr(arena_files[current_arena], "test"))) { // if health reaches 0 ~ death flag and break the loop
             current_arena = 0;
             if (spike_flag) display_spike_death();
             else if (death_flag) display_warrior_death(); 
-            death_flag = 0;
-            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
             break; 
         }
         else if (player_h <= 0 && strstr(arena_files[current_arena], "tutorial")) {
-            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
             display_tutorial_fail();
             continue; // skip this game loop iteration
         }
 
-        if (arena[player_x][player_y] == 'O' && strstr(arena_files[current_arena], "arena")) { // fall in hole ~ instant death
+        if (arena[player_x][player_y] == 'O' && (strstr(arena_files[current_arena], "arena") || strstr(arena_files[current_arena], "test"))) { // fall in hole ~ instant death
             current_arena = 0;
-            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y);
             display_hole_death();
             break; 
         }
         else if (arena[player_x][player_y] == 'O' && strstr(arena_files[current_arena], "tutorial")) {
-            reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+            reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
             reset_current_arena(&arena, &rows, &cols, &player_x, &player_y); // reset the tutorial
             display_tutorial_fail();
             continue; // skip this game loop iteration
@@ -308,18 +319,7 @@ void start_game() {
             else over_attack_consumable = 1;  // inventory is full ~ activate flag to let the item on the ground
         }
 
-        if (arena[player_x][player_y] == '#') next_arena = 1; 
-
-        if (arena[player_x][player_y] == 'K') {
-            for (int i = 0; i < rows; i++) { // change 'D' to '#' and 'd' to ' ' after the key is picked
-                for (int j = 0; j < cols; j++) {
-                    if (arena[i][j] == 'D') arena[i][j] = '#';
-                    else if (arena[i][j] == 'd') arena[i][j] = ' ';
-                }
-            }
-        }
-
-        if (arena[player_x][player_y] == 'k') {
+        if (arena[player_x][player_y] == 'k' || arena[player_x][player_y] == 'K') {
             for (int i = 0; i < rows; i++) { // change 'd' to ' ' after the key is picked
                 for (int j = 0; j < cols; j++) if (arena[i][j] == 'd') arena[i][j] = ' ';
             }
@@ -327,32 +327,33 @@ void start_game() {
 
         if (arena[player_x][player_y] == '!') {
             over_info = 1;
-            if (!after_pause && !use_consumable) handle_tutorials(); // print tutorial message based on the current tutorial arena
+            if (!block_input) handle_tutorials(); // print tutorial message based on the current tutorial arena
         }
 
-        if (!after_pause && !use_consumable) move_fighters(arena, rows, cols, player_x, player_y);
-
+        if (!block_input) move_fighters(arena, rows, cols, player_x, player_y);
+  
         /* LOAD NEXT ARENA */
-        if (next_arena) {
-            if (current_arena == 2) display_tutorial_health(); // display health system tutorial;
-            else if (current_arena == 3) display_tutorial_inventory(); // display items & inventory tutorial
-            
-            current_arena++;  // move to the next arena
-            
-            if(strstr(arena_files[current_arena], "tutorial") || strstr(arena_files[current_arena], "welcome")) { // in every tutorial arena reset the health and items
-               player_h = 100;
-               for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
-            }
+        if (arena[player_x][player_y] == '#') {
+            if (current_arena + 1 < num_arenas) { // check if next arena is valid
+                current_arena++;  // move to the next arena
 
-            if (current_arena < num_arenas) {
+                if (current_arena == 3 && played_tutorial) display_tutorial_health(); // display health system tutorial;
+                else if (current_arena == 4 && played_tutorial) display_tutorial_inventory(); // display items & inventory tutorial
+
+                if(strstr(arena_files[current_arena], "tutorial") || strstr(arena_files[current_arena], "welcome")) {
+                    player_h = 100;
+                    for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
+                }
+
                 free_arena(arena, rows); // current area freed
                 initialize_game(&arena, &rows, &cols, &player_x, &player_y); // initialize the next arena
-                next_arena = 0;  // reset flag
             } 
-            else {
+            else { // last arena
                 current_arena = 0;
                 display_win(); // win message after the last arena
-                reset_flags(&spike_flag, &exit_game, &warrior_flag, &next_arena, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+                reset_flags(&spike_flag, &exit_game, &death_flag, &weapon_flag, &over_health_consumable, &over_attack_consumable, &over_info, &over_small_hole);
+                player_h = 100;
+                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) items[i] = '\0';
                 break;
             }
         }
@@ -488,14 +489,22 @@ void print_gui(char **arena, int rows, int cols) {
     printf("= = = = = = = = = = = =\n|"); printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n"); 
     print_arena(arena, rows, cols);    
       
-    if (current_arena == 3) {  
-        handle_player_health(player_h); 
-        printf("\n= = = =\n");
+    if (played_tutorial) {
+        if (current_arena == 3) {  
+            handle_player_health(player_h); 
+            printf("\n= = = =\n");
+        }
+        else if (current_arena > 3){ 
+            handle_player_health(player_h);
+            handle_consumables(items); 
+        }  
     }
-    else if (current_arena > 3){ 
-        handle_player_health(player_h);
-        handle_consumables(items); 
-    }
+    else {
+        if (current_arena > 0) {
+            handle_player_health(player_h);
+            handle_consumables(items); 
+        }
+    } 
 }
 
 void handle_player_health(int health) {
@@ -577,14 +586,14 @@ int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, 
         is_paused = true;
         int pause = display_pause_menu(); // call the pause menu function
         if (pause) return 1; // if the user chooses to exit the game
-        else return 2; // return 2 in case he returns to the game
+        else block_input = 1; // block input in case he returns to the game
     }
     else if (input == '\x1b') {  // handling arrow keys
         input = getchar();
         if(input =='['){
             input = getchar();
             if(input == 'D' || input == 'A' || input == 'B' || input == 'C') {
-                use_consumable = 1;
+                block_input = 1;
                 return 0;
             }
         }
@@ -609,18 +618,18 @@ int process_player_inputs(int *player_x, int *player_y, char **arena, int rows, 
             break;
         case '1': // inventory slot 1
             handle_inventory_slot(&items[0]);
-            use_consumable = 1;
+            block_input = 1;
             break;
         case '2': // inventory slot 2
             handle_inventory_slot(&items[1]);
-            use_consumable = 1;
+            block_input = 1;
             break;
         case '3': // inventory slot 3
             handle_inventory_slot(&items[2]);
-            use_consumable = 1;
+            block_input = 1;
             break;
         default:
-            use_consumable = 1;
+            block_input = 1;
             break;
     }
     
@@ -639,6 +648,7 @@ int is_inventory_full(char items[]) {
 void handle_inventory_slot(char *item_slot) {
     if(*item_slot == '+') {
         player_h += 15;
+        if (player_h > MAX_HEATH) player_h = 115;
         *item_slot = '\0';
     }
     else if(*item_slot == '^') {
@@ -647,6 +657,17 @@ void handle_inventory_slot(char *item_slot) {
     }
 }
 
+void handle_arena_exit(char **arena, int rows, int cols) {
+    for (int i = 0; i < rows; i++) { 
+        for (int j = 0; j < cols; j++) if (arena[i][j] == 'K' || arena[i][j] == 'w') exit_arena++; 
+    }
+
+    if (!exit_arena) {
+        for (int i = 0; i < rows; i++) { // change 'D' to '#' 
+            for (int j = 0; j < cols; j++)  if (arena[i][j] == 'D') arena[i][j] = '#';
+        }
+    }
+}
 /*
     RESET FUNCTIONS
 */
@@ -658,12 +679,12 @@ void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int
     initialize_game(arena, rows, cols, player_x, player_y);
 }
 
-void reset_flags(int *spike_flag, int *exit_game, int *warrior_flag, int *next_arena, 
-                 int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole) {
+void reset_flags(int *spike_flag, int *exit_game, int *death_flag, int *weapon_flag,
+                int *over_health_consumable, int *over_attack_consumable, int *over_info, int *over_small_hole) {
     *spike_flag = 0;
     *exit_game = 0;
-    *warrior_flag = 0;
-    *next_arena = 0;
+    *death_flag = 0;
+    *weapon_flag = 0;
     *over_health_consumable = 0;
     *over_attack_consumable = 0;
     *over_info = 0;
@@ -815,22 +836,42 @@ void display_main_menu() {
         printf("= = = = = = = = = = = =\n|"); 
         printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
         printf("= = = = = = = = = = = =\n"); 
-        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-        printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Hello, User!    |\n"); 
-        printf("|"); printf(" %sI %s", CYAN, RESET); printf("|                 |\n"); 
-        printf("|"); printf(" %sN %s", CYAN, RESET); printf("| 1: New Game     |\n");
-        printf("|"); printf(" %s- %s", CYAN, RESET); printf("| 2: Exit Game    |\n");
-        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-        printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n");
-        printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n");
-        printf("|"); printf(" %sU %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sA %s", ORANGE, RESET); printf("| Hello, User!    |\n"); 
+        printf("|"); printf(" %sI %s", ORANGE, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sN %s", ORANGE, RESET); printf("| 1: New Game     |\n");
+        printf("|"); printf(" %s- %s", ORANGE, RESET); printf("| 2: Exit Game    |\n");
+        printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sE %s", ORANGE, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sN %s", ORANGE, RESET); printf("|                 |\n");
+        printf("|"); printf(" %sU %s", ORANGE, RESET); printf("|                 |\n"); 
         printf("= = = = = = = = = = = =\n");
 
         char input;
         input = getchar();
         switch (input) {
             case '1': 
-                start_game();
+                ask_about_tutorial();
+                char ask = getchar();
+                if (ask == 'y' || ask == 'Y') {
+                    played_tutorial = true;
+                    clear_console();
+                    char *tutorial_files[] = { "welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
+                        "arena0.txt", "arena1.txt", "arena2.txt"};
+                    int count = sizeof(tutorial_files) / sizeof(tutorial_files[0]);
+                    set_arena_files(tutorial_files, count);
+                    start_game();
+                    break;
+                }
+                else if (ask == 'n' || ask == 'N') {
+                    played_tutorial = false;
+                    clear_console();
+                    char *non_tutorial_files[] = { "welcome.txt", "arena0.txt", "arena1.txt", "arena2.txt" };
+                    int count = sizeof(non_tutorial_files) / sizeof(non_tutorial_files[0]);
+                    set_arena_files(non_tutorial_files, count);
+                    start_game();
+                    break;
+                }
                 break;
             case '2': 
                 display_exit_message();
@@ -851,16 +892,16 @@ int display_pause_menu() {
         printf("= = = = = = = = = = = =\n|"); 
         printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
         printf("= = = = = = = = = = = =\n"); 
-        printf("|"); printf(" %sP %s", CYAN, RESET); printf("| ___             |\n");
-        printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n"); 
-        printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Tab: Return to  |\n"); 
-        printf("|"); printf(" %sS %s", CYAN, RESET); printf("|      the arena  |\n");
-        printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n");
-        printf("|"); printf(" %s- %s", CYAN, RESET); printf("| Esc: Go to the  |\n");
-        printf("|"); printf(" %sM %s", CYAN, RESET); printf("|      main menu  |\n");
-        printf("|"); printf(" %sE %s", CYAN, RESET); printf("| ___             |\n");
-        printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n"); 
-        printf("|"); printf(" %sU %s", CYAN, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sP %s", ORANGE, RESET); printf("| ___             |\n");
+        printf("|"); printf(" %sA %s", ORANGE, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sU %s", ORANGE, RESET); printf("| Tab: Return to  |\n"); 
+        printf("|"); printf(" %sS %s", ORANGE, RESET); printf("|      the arena  |\n");
+        printf("|"); printf(" %sE %s", ORANGE, RESET); printf("|                 |\n");
+        printf("|"); printf(" %s- %s", ORANGE, RESET); printf("| Esc: Go to the  |\n");
+        printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|      main menu  |\n");
+        printf("|"); printf(" %sE %s", ORANGE, RESET); printf("| ___             |\n");
+        printf("|"); printf(" %sN %s", ORANGE, RESET); printf("|                 |\n"); 
+        printf("|"); printf(" %sU %s", ORANGE, RESET); printf("|                 |\n"); 
         printf("= = = = = = = = = = = =\n");
 
         char input;
@@ -1083,15 +1124,15 @@ void display_spike_death() { // death message for spikes
     printf("= = = = = = = = = = = =\n|"); 
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
-    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
-    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| An ordinary     |\n"); 
-    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| spike took your |\n");
-    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| life :)         |\n");
-    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n"); 
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| and return back |\n"); 
+    printf("|"); printf(" %sG %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", RED, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("| An ordinary     |\n"); 
+    printf("|"); printf(" %s- %s", RED, RESET); printf("| spike took your |\n");
+    printf("|"); printf(" %sO %s", RED, RESET); printf("| life :)         |\n");
+    printf("|"); printf(" %sV %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sR %s", RED, RESET); printf("| and return back |\n"); 
     printf("| = | to the main     |\n"); printf("| = | menu ...        |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
@@ -1103,15 +1144,15 @@ void display_hole_death() { // death message for holes
     printf("= = = = = = = = = = = =\n|"); 
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
-    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
-    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| It looks like   |\n"); 
-    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| you fell into a |\n");
-    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| very big hole!  |\n");
-    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n"); 
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| and return back |\n"); 
+    printf("|"); printf(" %sG %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", RED, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("| It looks like   |\n"); 
+    printf("|"); printf(" %s- %s", RED, RESET); printf("| you fell into a |\n");
+    printf("|"); printf(" %sO %s", RED, RESET); printf("| very big hole!  |\n");
+    printf("|"); printf(" %sV %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sR %s", RED, RESET); printf("| and return back |\n"); 
     printf("| = | to the main     |\n"); printf("| = | menu ...        |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
@@ -1123,15 +1164,15 @@ void display_warrior_death() { // death message for warriors
     printf("= = = = = = = = = = = =\n|"); 
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
-    printf("|"); printf(" %sG %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
-    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Warriors are    |\n"); 
-    printf("|"); printf(" %s- %s", CYAN, RESET); printf("| hard to defeat  |\n");
-    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| if you are not  |\n");
-    printf("|"); printf(" %sV %s", CYAN, RESET); printf("| skilled!        |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("|                 |\n"); 
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| Press any key   |\n"); 
+    printf("|"); printf(" %sG %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", RED, RESET); printf("| "); printf("%sYOU ARE DEAD!%s", BRIGHT_RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sM %s", RED, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("| Warriors are    |\n"); 
+    printf("|"); printf(" %s- %s", RED, RESET); printf("| hard to defeat  |\n");
+    printf("|"); printf(" %sO %s", RED, RESET); printf("| if you are not  |\n");
+    printf("|"); printf(" %sV %s", RED, RESET); printf("| skilled!        |\n");
+    printf("|"); printf(" %sE %s", RED, RESET); printf("|                 |\n"); 
+    printf("|"); printf(" %sR %s", RED, RESET); printf("| Press any key   |\n"); 
     printf("| = | and return back |\n"); printf("| = | to the main     |\n"); 
     printf("| = | menu ...        |\n"); printf("| = |                 |\n"); 
     printf("= = = = = = = = = = = =\n");
@@ -1144,15 +1185,15 @@ void display_exit_message() { // message displayed when exiting the game
     printf("= = = = = = = = = = = =\n|"); 
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
-    printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Are you sure    |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| about leaving   |\n");
-    printf("|"); printf(" %sN %s", CYAN, RESET); printf("| the game?  "); printf("%s:(%s", YELLOW, RESET); printf("   |\n");
-    printf("|"); printf(" %s- %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sM %s", CYAN, RESET); printf("| Press "); printf("%sY%s", RED, RESET); printf(" or "); printf("%sy%s", RED, RESET); printf(" to |\n");
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| "); printf("%sexit%s", RED, RESET); printf(" the game.  |\n");
-    printf("|"); printf(" %sN %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Press any other |\n"); 
+    printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", ORANGE, RESET); printf("| Are you sure    |\n");
+    printf("|"); printf(" %sI %s", ORANGE, RESET); printf("| about leaving   |\n");
+    printf("|"); printf(" %sN %s", ORANGE, RESET); printf("| the game?  "); printf("%s:(%s", YELLOW, RESET); printf("   |\n");
+    printf("|"); printf(" %s- %s", ORANGE, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sM %s", ORANGE, RESET); printf("| Press "); printf("%sY%s", RED, RESET); printf(" or "); printf("%sy%s", RED, RESET); printf(" to |\n");
+    printf("|"); printf(" %sE %s", ORANGE, RESET); printf("| "); printf("%sexit%s", RED, RESET); printf(" the game.  |\n");
+    printf("|"); printf(" %sN %s", ORANGE, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sU %s", ORANGE, RESET); printf("| Press any other |\n"); 
     printf("| = | key to ");  printf("%sstay%s", GREEN, RESET); printf(" ... |\n");
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
 }
@@ -1162,13 +1203,13 @@ void display_win() { // message displayed when finishing all arenas
     printf("= = = = = = = = = = = =\n|"); 
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
-    printf("|"); printf(" %sV %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| "); printf("%sCONGRATULATIONS%s", GREEN, RESET); printf(" |\n");
-    printf("|"); printf(" %sC %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| You completed   |\n"); 
-    printf("|"); printf(" %sO %s", CYAN, RESET); printf("| all the arenas! |\n");
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sY %s", CYAN, RESET); printf("| Thank you for   |\n");
+    printf("|"); printf(" %sV %s", GREEN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sI %s", GREEN, RESET); printf("| "); printf("%sCONGRATULATIONS%s", BRIGHT_GREEN, RESET); printf(" |\n");
+    printf("|"); printf(" %sC %s", GREEN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sT %s", GREEN, RESET); printf("| You completed   |\n"); 
+    printf("|"); printf(" %sO %s", GREEN, RESET); printf("| all the arenas! |\n");
+    printf("|"); printf(" %sR %s", GREEN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sY %s", GREEN, RESET); printf("| Thank you for   |\n");
     printf("|"); printf(" %s! %s", YELLOW, RESET); printf("| playing "); printf("%sv.1.0%s", YELLOW, RESET); printf("   |\n"); 
     printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
     printf("| = | and return back |\n"); printf("| = | to the main     |\n"); 
@@ -1176,6 +1217,27 @@ void display_win() { // message displayed when finishing all arenas
     printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
+}
+
+void ask_about_tutorial() { // message that asks the user if he wants to play the tutorial
+    clear_console();
+    printf("= = = = = = = = = = = =\n|"); 
+    printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
+    printf("= = = = = = = = = = = =\n"); 
+    printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sA %s", ORANGE, RESET); printf("| Do you want     |\n"); 
+    printf("|"); printf(" %sI %s", ORANGE, RESET); printf("| to play the     |\n"); 
+    printf("|"); printf(" %sN %s", ORANGE, RESET); printf("| tutorial?       |\n");
+    printf("|"); printf(" %s- %s", ORANGE, RESET); printf("| ("); printf("%srecommended%s", GREEN, RESET); printf(")   |\n");
+    printf("|"); printf(" %sM %s", ORANGE, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sE %s", ORANGE, RESET); printf("| Press "); printf("%sY%s", GREEN, RESET); printf(" or "); printf("%sy%s", GREEN, RESET); printf(" to |\n");
+    printf("|"); printf(" %sN %s", ORANGE, RESET); printf("| for playing it. |\n");
+    printf("|"); printf(" %sU %s", ORANGE, RESET); printf("|                 |\n"); 
+    printf("| = | Press "); printf("%sN%s", YELLOW, RESET); printf(" or "); printf("%sn%s", YELLOW, RESET); printf("    |\n"); printf("| = | for starting    |\n"); 
+    printf("| = | without it.     |\n"); printf("| = |                 |\n"); 
+    printf("| = | Press any other |\n"); printf("| = | key to return   |\n"); 
+    printf("| = | back ...        |\n"); printf("| = |                 |\n"); 
+    printf("= = = = = = = = = = = =\n");
 }
 
 
