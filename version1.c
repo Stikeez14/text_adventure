@@ -60,7 +60,7 @@ int block_input = 0;
 
 int exit_arena = 0; // counts how many enemies and exit keys are required to open the door
 
-int row_dir[] = {-1, 1, 0, 0};
+int row_dir[] = {-1, 1, 0, 0}; // directions for enemies
 int col_dir[] = {0, 0, -1, 1};
 
 /*
@@ -86,6 +86,7 @@ int is_inventory_full(char items[]);
 void handle_inventory_slot(char *item_slot);  // activates the consumables
 void handle_arena_exit(char **arena, int rows, int cols); // unlocks the door after collecting the key + eliminating all threats
 void handle_consumable(char consumable, int *flag, int player_x, int player_y, char **arena); // helper function for checking which consumable is picked
+void update_arena_character(char character, int *flag, int player_x, int player_y, char **arena); // updates the previous position the player was on
 
 void reset_current_arena(char ***arena, int *rows, int *cols, int *player_x, int *player_y);
 void reset_flags(int *over_spike, int *exit_game, int *death_flag, int *weapon_flag,
@@ -206,6 +207,10 @@ void start_game() {
     int over_defense_consumable = 0;
     int over_info = 0;
     int over_small_hole = 0;
+    int over_left_teleporter = 0;
+    int over_right_teleporter = 0;
+
+    bool teleported = false;
 
     while (!exit_game) { 
 
@@ -217,31 +222,17 @@ void start_game() {
         block_input = 0;
     
         /* UPDATE ARENA CONSUMABLES AND TRAPS */
-        if(over_spike) { // if the player is over these characters  ~ after leaving that position they remain there
-            arena[player_x][player_y] = 'x'; 
-            over_spike = 0;
-        }
-        else if (over_info) {
-            arena[player_x][player_y] = '!';  
-            over_info = 0;
-        }
-        else if (over_small_hole) {
-            arena[player_x][player_y] = 'o';
-            over_small_hole = 0;
-        }
-        else if (over_attack_consumable) {    
-            arena[player_x][player_y] = '^';  
-            over_attack_consumable = 0;
-        }
-        else if (over_defense_consumable) {
-            arena[player_x][player_y] = '(';
-            over_defense_consumable = 0;
-        }
-        else if (over_health_consumable) {    
-            arena[player_x][player_y] = '+';
-            over_health_consumable = 0;
-        }
-        else arena[player_x][player_y] = ' '; // clear current player location 
+        arena[player_x][player_y] = ' ';
+        update_arena_character('x', &over_spike, player_x, player_y, arena);
+        update_arena_character('!', &over_info, player_x, player_y, arena);
+        update_arena_character('o', &over_small_hole, player_x, player_y, arena);
+        update_arena_character('^', &over_attack_consumable, player_x, player_y, arena);
+        update_arena_character('(', &over_defense_consumable, player_x, player_y, arena);
+        update_arena_character('+', &over_health_consumable, player_x, player_y, arena);
+        update_arena_character('<', &over_left_teleporter, player_x, player_y, arena);
+        update_arena_character('>', &over_right_teleporter, player_x, player_y, arena);
+
+        teleported = false;
     
         /* INPUT AND PLAYER INTERACTIONS */
         if (!death_flag) exit_game = process_player_inputs(&player_x, &player_y, arena, rows, cols);
@@ -258,7 +249,7 @@ void start_game() {
 
         if ((arena[player_x][player_y] == 'w' || death_flag) && !weapon_flag) { // if player position = w position & the player has no weapon,
             player_h -= 200;                                                    // he dies, oth the warrior dies
-            death_flag = 1;                                                    
+            death_flag = 1;                                                
         }
 
         if (player_h <= 0 && (strstr(arena_files[current_arena], "arena") || strstr(arena_files[current_arena], "test"))) { // if health reaches 0 ~ death flag and break the loop
@@ -311,6 +302,32 @@ void start_game() {
         }
 
         if (arena[player_x][player_y] == 'c') { coins++; score += 50; }
+
+        if (arena[player_x][player_y] == '<' && !teleported) { 
+            over_right_teleporter = 1;
+            for (int i = 0; i < rows; i++) { 
+                for (int j = 0; j < cols; j++) {
+                    if ((arena)[i][j] == '>') {
+                        player_x = i;
+                        player_y = j;
+                    }
+                }
+            } 
+            teleported = true;    
+        }
+
+        if (arena[player_x][player_y] == '>' && !teleported) {
+            over_left_teleporter = 1;
+            for (int i = 0; i < rows; i++) { 
+                for (int j = 0; j < cols; j++) {
+                    if ((arena)[i][j] == '<') {
+                        player_x = i;
+                        player_y = j;
+                    }
+                }
+            }  
+            teleported = true;
+        }
 
         if (!block_input) move_fighters(arena, rows, cols, player_x, player_y);
   
@@ -485,9 +502,11 @@ void set_arena_files(char **files, int count) {
 */
 void print_gui(char **arena, int rows, int cols) {
     clear_console(); 
-    printf("= = = = = = = = = = = =\n|"); 
-
-    handle_highscore_coins(score, coins);
+     
+    if(!played_tutorial || (played_tutorial && current_arena >=7 )) {
+        printf("= = = = = = = = = = = =\n|");
+        handle_highscore_coins(score, coins);
+    }
     print_arena(arena, rows, cols);    
       
     if (played_tutorial) { 
@@ -498,7 +517,7 @@ void print_gui(char **arena, int rows, int cols) {
         else if (current_arena > 3){ 
             print_player_health(player_h);
             print_inventory(items); 
-        }  
+        }
     }
     else {
         print_player_health(player_h);
@@ -556,22 +575,22 @@ void print_inventory(char items[]) {
 void handle_highscore_coins(int score, int coins) {
     printf("%sHIGHSCORE%s", ORANGE, RESET); printf(":"); 
     if (!score) {
-        printf("%s000000%s", LIGHT_ORANGE, RESET); printf("|"); 
+        printf("%s00000%s", LIGHT_ORANGE, RESET); printf("|"); 
     } 
     else if (score > 0 && score < 10) {
-        printf("%s00000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
-    }
-    else if (score >= 10 && score < 100) {
         printf("%s0000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
     }
-    else if (score >= 100 && score < 1000) {
+    else if (score >= 10 && score < 100) {
         printf("%s000%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+    }
+    else if (score >= 100 && score < 1000) {
+        printf("%s00%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
     } 
     else if (score >= 1000 && score < 10000) {
-        printf("%s00%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
     }
     else if (score >= 10000 && score < 100000) {
-        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, score, RESET); printf("|");
+        printf("%s%d%s", ORANGE, score, RESET); printf("|");
     }
     else {
         printf("%s99999%s", ORANGE, RESET); printf("|");
@@ -580,16 +599,19 @@ void handle_highscore_coins(int score, int coins) {
     // displaying total coins
     printf("%s$%s", ORANGE, RESET); printf(":");
     if(!coins) { 
-        printf("%s00%s", LIGHT_ORANGE, RESET); printf("|\n"); 
+        printf("%s000%s", LIGHT_ORANGE, RESET); printf("|\n"); 
     }
     else if(coins > 0 && coins < 10) { 
-        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, coins, RESET); printf("|\n");
+        printf("%s00%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, coins, RESET); printf("|\n");
     }
     else if(coins >= 10 && coins < 100) { 
+        printf("%s0%s", LIGHT_ORANGE, RESET); printf("%s%d%s", ORANGE, coins, RESET); printf("|\n");
+    }
+     else if(coins >= 100 && coins < 1000) { 
         printf("%s%d%s", ORANGE, coins, RESET); printf("|\n"); 
     }
     else { 
-        printf("%s99%s", ORANGE, RESET); printf("|\n"); 
+        printf("%s999%s", ORANGE, RESET); printf("|\n"); 
     }
 }
 
@@ -716,19 +738,24 @@ void handle_arena_exit(char **arena, int rows, int cols) {
 
 void handle_consumable(char consumable, int *flag, int player_x, int player_y, char **arena) {
     if (arena[player_x][player_y] == consumable) {
-            if (consumable =='+' && player_h <= 15) player_h += 15; // auto use the health consumable if health is lower than 15
-            else if (!is_inventory_full(items)) { // if the inventory is not full, add the item
-                for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
-                    if (items[i] == '\0') {
-                        items[i] = consumable;
-                        break;
-                    }
+        if (!is_inventory_full(items)) { // if the inventory is not full, add the item
+            for (int i = 0; i < MAX_INVENTORY_ITEMS; i++) {
+                if (items[i] == '\0') {
+                    items[i] = consumable;
+                    break;
                 }
-            } 
-            else *flag = 1; // inventory is full ~ activate flag to let the item on the ground
-        }
+            }
+        } 
+        else *flag = 1; // inventory is full ~ activate flag to let the item on the ground
+    }
 }
 
+void update_arena_character(char character, int *flag, int player_x, int player_y, char **arena) {
+    if(*flag) {
+        arena[player_x][player_y] = character;
+        *flag = 0;
+    }
+}
 /*
     RESET FUNCTIONS
 */
@@ -920,7 +947,8 @@ void display_main_menu() {
                     played_tutorial = true;
                     clear_console();
                     char *tutorial_files[] = { "welcome.txt", "tutorial0.txt", "tutorial1.txt", "tutorial2.txt", "tutorial3.txt", "tutorial4.txt",
-                        "tutorial5.txt", "arena0.txt", "arena1.txt", "arena2.txt"};
+                        "tutorial5.txt", "tutorial6.txt", "tutorial7.txt", "arena0.txt", "arena1.txt", "arena2.txt"};
+                    //char *tutorial_files[] = {"tutorial7.txt"};
                     int count = sizeof(tutorial_files) / sizeof(tutorial_files[0]);
                     set_arena_files(tutorial_files, count);
                     start_game();
@@ -995,11 +1023,13 @@ void display_tutorial_movement() { // tutorial message for movement
     printf("|"); printf(" %sW %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Use "); printf("%swasd%s", GREEN, RESET); printf(" (or    |\n");
     printf("|"); printf(" %sL %s", CYAN, RESET); printf("| uppercase "); printf("%sWASD%s", GREEN, RESET); printf(") |\n");
-    printf("|"); printf(" %sC %s", CYAN, RESET); printf("| to move the     |\n"); 
+    printf("|"); printf(" %sC %s", CYAN, RESET); printf("| to "); printf("%smove%s", GREEN, RESET); printf(" the     |\n");
     printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| character!      |\n");
     printf("|"); printf(" %sM %s", CYAN, RESET); printf("|                 |\n"); 
-    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Press any key   |\n");
-    printf("|"); printf(" %s! %s", YELLOW, RESET); printf("| to continue ... |\n");
+    printf("|"); printf(" %sE %s", CYAN, RESET); printf("| Also, "); printf("%sTAB%s", YELLOW, RESET); printf(" can   |\n");
+    printf("|"); printf(" %s! %s", YELLOW, RESET); printf("| be used to      |\n");
+    printf("| = | "); printf("%spause%s", YELLOW, RESET); printf(" the game. |\n"); printf("| = |                 |\n"); 
+    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
@@ -1011,16 +1041,17 @@ void display_tutorial0() { // tutorial message for the first tutorial arena
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Sometimes paths |\n"); 
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| are blocked by  |\n"); 
-    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| doors ("); printf("%sd%s", DARK_GRAY, RESET); printf(").      |\n");
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| Collect the key |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| ("); printf("%sk%s", YELLOW, RESET); printf(") to unlock   |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| them!           |\n");
-    printf("| = |                 |\n"); printf("| = | Press any key   |\n");
-    printf("| = | to continue ... |\n"); printf("| = |                 |\n"); 
-    printf("= = = = = = = = = = = =\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s1) DOORS & KEYS%s", YELLOW, RESET); printf(" |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n"); 
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| Sometimes paths |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| are blocked by  |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| "); printf("%sdoors%s", DARK_GRAY, RESET); printf(" ("); printf("%sd%s", DARK_GRAY, RESET); printf(").      |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| Collect the "); printf("%skey%s", YELLOW, RESET); printf(" |\n");
+    printf("| = | ("); printf("%sk%s", YELLOW, RESET); printf(") to unlock   |\n");
+    printf("| = | them!           |\n"); printf("| = |                 |\n"); 
+    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n");
+    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
 }
@@ -1031,17 +1062,19 @@ void display_tutorial1() { // tutorial message for the second tutorial arena
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| If the arena    |\n"); 
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| exit door ("); printf("%s#%s", YELLOW, RESET); printf(")   |\n");
-    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| is locked ("); printf("%sD%s", DARK_GRAY, RESET); printf("),  |\n");
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| collect the end |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| key ("); printf("%sK%s", YELLOW, RESET); printf(").        |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| This special    |\n");
-    printf("| = | key can open    |\n"); printf("| = | both exit and   |\n"); 
-    printf("| = | path doors ("); printf("%sd%s", DARK_GRAY, RESET); printf("). |\n"); printf("| = |                 |\n");
-    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
-    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s2) EXIT DOORS%s", YELLOW, RESET); printf("   |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| If the arena    |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| "); printf("%sexit door%s", YELLOW, RESET); printf(" ("); printf("%s#%s", YELLOW, RESET); printf(")   |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| is "); printf("%slocked%s", DARK_GRAY, RESET); printf(" ("); printf("%sD%s", DARK_GRAY, RESET); printf("),  |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| collect the "); printf("%send%s", YELLOW, RESET); printf(" |\n"); 
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| "); printf("%skey%s", YELLOW, RESET); printf(" ("); printf("%sK%s", YELLOW, RESET); printf(").        |\n");
+    printf("| = |                 |\n"); printf("| = | This "); printf("%sspecial%s", YELLOW, RESET); printf("    |\n");
+    printf("| = | "); printf("%skey%s", YELLOW, RESET); printf(" can open    |\n"); printf("| = | both "); printf("%sexit%s", DARK_GRAY, RESET); printf(" and   |\n");
+    printf("| = | "); printf("%spath doors%s", DARK_GRAY, RESET); printf(" ("); printf("%sd%s", DARK_GRAY, RESET); printf("). |\n"); 
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
+    printf("| = | to continue ... |\n"); printf("| = |                 |\n");
+    printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
 }
@@ -1052,18 +1085,20 @@ void display_tutorial_health() { // tutorial message for the health system
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%sHEALTH SYSTEM%s", YELLOW, RESET); printf("   |\n");
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n"); 
-    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|  = = = =        |\n");
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|  |"); printf("%sH:100%s", GREEN, RESET); printf("|        |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  = = = =        |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| Enemies and     |\n");
-    printf("| = | traps reduce    |\n"); printf("| = | your health.    |\n");
-    printf("| = |                 |\n"); printf("| = | If it hits "); printf("%s0%s", RED, RESET); printf(",   |\n");
-    printf("| = | you'll "); printf("%sdie!%s", RED, RESET); printf("     |\n"); printf("| = |                 |\n");
-    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
-    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s3) HEALTH    %s", YELLOW, RESET); printf("   |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| "); printf("%s   SYSTEM%s", YELLOW, RESET); printf("       |\n");
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("|  = = = =        |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  |"); printf("%sH:100%s", GREEN, RESET); printf("|        |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|  = = = =        |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("|                 |\n");
+    printf("| = | ");  printf("%sEnemies%s", RED, RESET); printf(" and     |\n"); printf("| = | "); printf("%straps%s", RED, RESET);printf(" reduce    |\n");
+    printf("| = | your health.    |\n"); printf("| = |                 |\n");
+    printf("| = | If it hits "); printf("%s0%s", RED, RESET); printf(",   |\n");
+    printf("| = | you'll "); printf("%sdie!%s", RED, RESET); printf("     |\n"); 
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
+    printf("| = | to continue ... |\n"); printf("| = |                 |\n");
+    printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
 }
@@ -1074,16 +1109,17 @@ void display_tutorial2() { // tutorial message for the third tutorial arena
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| If you step on  |\n"); 
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| spikes ("); printf("%sx%s", RED, RESET); printf("),     |\n");
-    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| your health     |\n"); 
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| will decrease   |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| by "); printf("%s30%s", RED, RESET); printf(".          |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| Items improve   |\n");
-    printf("| = | your defense    |\n"); printf("| = | againts spikes! |\n"); 
-    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
-    printf("| = | to continue ... |\n"); printf("| = |                 |\n"); 
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s4) SPIKES%s", YELLOW, RESET); printf("       |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| If you step on  |\n"); 
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| "); printf("%sspikes%s", RED, RESET); printf(" ("); printf("%sx%s", RED, RESET); printf("),     |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| your health     |\n"); 
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| will "); printf("%sdecrease%s", RED, RESET); printf("   |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| by "); printf("%s30%s", RED, RESET); printf(".          |\n");
+    printf("| = |                 |\n"); printf("| = | "); printf("%sItems%s", YELLOW, RESET); printf(" improve   |\n");
+    printf("| = | your defense    |\n"); printf("| = | againts "); printf("%sspikes!%s", RED, RESET); printf(" |\n");
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n");
+    printf("| = | to continue ... |\n"); printf("| = |                 |\n");
     printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
@@ -1095,21 +1131,21 @@ void display_tutorial_inventory() { // tutorial message for the inventory system
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%sITEMS &        %s", YELLOW, RESET); printf(" |\n");
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| "); printf("%sINVENTORY      %s", YELLOW, RESET); printf(" |\n"); 
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s5) ITEMS       %s", YELLOW, RESET); printf(" |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| "); printf("%s& INVENTORY    %s", YELLOW, RESET); printf(" |\n"); 
     printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|                 |\n");
     printf("|"); printf(" %sR %s", CYAN, RESET); printf("|  = = = = = = =  |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  |"); printf("%s[%s", ORANGE, RESET); printf("%s1%s", GREEN, RESET); 
-        printf("%s]%s", ORANGE, RESET); printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s2%s", GREEN, RESET); printf("%s]%s", ORANGE, RESET); 
-        printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s3%s", GREEN, RESET); printf("%s]%s", ORANGE, RESET);  printf("|  |\n");
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("|  |"); printf("%s[%s", ORANGE, RESET); printf("%s1%s", LIGHT_ORANGE, RESET); 
+        printf("%s]%s", ORANGE, RESET); printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s2%s", LIGHT_ORANGE, RESET); printf("%s]%s", ORANGE, RESET); 
+        printf("|"); printf("%s[%s", ORANGE, RESET); printf("%s3%s", LIGHT_ORANGE, RESET); printf("%s]%s", ORANGE, RESET);  printf("|  |\n");
     printf("|"); printf(" %sA %s", CYAN, RESET); printf("|  = = = = = = =  |\n");
     printf("|"); printf(" %sL %s", CYAN, RESET); printf("|                 |\n");
-    printf("| = | Items help you  |\n"); printf("| = | get through the |\n");
+    printf("| = | "); printf("%sItems%s", YELLOW, RESET); printf(" help you  |\n"); printf("| = | get through the |\n");
     printf("| = | the arenas more |\n"); printf("| = | easily.         |\n");
     printf("| = |                 |\n"); printf("| = | Use them by     |\n"); 
-    printf("| = | pressing "); printf("%s1%s", GREEN, RESET); printf(", "); printf("%s2%s", GREEN, RESET); printf("   |\n");
-    printf("| = | or "); printf("%s3%s", GREEN, RESET); printf(" for their  |\n"); 
-    printf("| = | corresponding   |\n"); printf("| = | inventory slot. |\n");
+    printf("| = | pressing "); printf("%s1%s", LIGHT_ORANGE, RESET); printf(", "); printf("%s2%s", LIGHT_ORANGE, RESET); printf("   |\n");
+    printf("| = | or "); printf("%s3%s", LIGHT_ORANGE, RESET); printf(" for their  |\n"); 
+    printf("| = | corresponding   |\n"); printf("| = | "); printf("%sinventory slot.%s", YELLOW, RESET); printf(" |\n");
     printf("| = |                 |\n"); printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
@@ -1122,20 +1158,22 @@ void display_tutorial3() { // tutorial message for the fourth tutorial arena
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Your health is  |\n"); 
-    printf("|"); printf(" %sT %s", CYAN, RESET); printf("| low?            |\n");
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s6) HEALTH%s", YELLOW, RESET); printf("       |\n");
+    printf("|"); printf(" %sT %s", CYAN, RESET); printf("|    "); printf("%sPICKUP%s", YELLOW, RESET); printf("       |\n");
     printf("|"); printf(" %s0 %s", CYAN, RESET); printf("|                 |\n"); 
-    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| Pick up health  |\n");
-    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| increase ("); printf("%s+%s", GREEN, RESET); printf(")    |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| and restore     |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| your health!    |\n");
+    printf("|"); printf(" %sR %s", CYAN, RESET); printf("| Your health is  |\n"); 
+    printf("|"); printf(" %sI %s", CYAN, RESET); printf("| "); printf("%slow?%s", RED, RESET); printf("            |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("|                 |\n");
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| Pick up "); printf("%shealth%s", GREEN, RESET); printf("  |\n");
+    printf("| = | "); printf("%sincrease%s", GREEN, RESET); printf(" ("); printf("%s+%s", GREEN, RESET); printf(")    |\n");
+    printf("| = | and restore     |\n");
+    printf("| = | your health!    |\n");
     printf("| = |                 |\n"); printf("| = | Without any     |\n"); 
-    printf("| = | upgrades, this  |\n"); printf("| = | consumable will |\n");
-    printf("| = | give you "); printf("%s+15 H.%s", GREEN, RESET); printf(" |\n"); printf("| = |                 |\n");
-    printf("| = | If "); printf("%sH > 15%s", GREEN, RESET); printf(", the  |\n"); printf("| = | item gets into  |\n");  
-    printf("| = | the inventory!  |\n"); printf("| = |                 |\n"); 
-    printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
-    printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
+    printf("| = | upgrades, this  |\n"); printf("| = | "); printf("%sconsumable%s", YELLOW, RESET);  printf(" will |\n");
+    printf("| = | give you "); printf("%s+15 H.%s", GREEN, RESET); printf(" |\n");
+    printf("| = |                 |\n"); printf("| = | Press any key   |\n"); 
+    printf("| = | to continue ... |\n"); printf("| = |                 |\n"); 
+    printf("= = = = = = = = = = = =\n");
     getchar(); 
     clear_console();
 }
@@ -1146,18 +1184,18 @@ void display_tutorial4() { // tutorial message for the fifth tutorial arena
     printf(" %s  _TEXT_ADVENTURE_  %s", ORANGE, RESET); printf("|\n");
     printf("= = = = = = = = = = = =\n"); 
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| Be carefull!!!  |\n"); 
+    printf("|"); printf(" %sU %s", CYAN, RESET); printf("| "); printf("%s7) HOLES%s", YELLOW, RESET); printf("        |\n");
     printf("|"); printf(" %sT %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| Holes appeared  |\n"); 
+    printf("|"); printf(" %s0 %s", CYAN, RESET); printf("| "); printf("%sHoles%s", RED, RESET); printf(" appeared  |\n");
     printf("|"); printf(" %sR %s", CYAN, RESET); printf("| out of nowhere. |\n");
     printf("|"); printf(" %sI %s", CYAN, RESET); printf("|                 |\n");
-    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Falling into a  |\n");
-    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| a big hole ("); printf("%sO%s", RED, RESET); printf(")  |\n");
+    printf("|"); printf(" %sA %s", CYAN, RESET); printf("| Falling into a  |\n"); 
+    printf("|"); printf(" %sL %s", CYAN, RESET); printf("| a "); printf("%sbig hole%s", RED, RESET); printf(" ("); printf("%sO%s", RED, RESET); printf(")  |\n");
     printf("| = | means instant   |\n"); printf("| = | ");  printf("%sdeath!%s", RED, RESET); printf("          |\n");
-    printf("| = |                 |\n"); printf("| = | Small holes ("); printf("%so%s", RED, RESET); printf(") |\n");
+    printf("| = |                 |\n"); printf("| = | "); printf("%sSmall holes%s", RED, RESET); printf(" ("); printf("%so%s", RED, RESET); printf(") |\n");
     printf("| = | will not give   |\n"); printf("| = | you any damage  |\n");
     printf("| = | "); printf("%sBUT%s", YELLOW, RESET); printf(" all your    |\n"); printf("| = | items will be   |\n");  
-    printf("| = | "); printf("%slost%s", RED, RESET); printf(" :)         |\n"); printf("| = |                 |\n"); 
+    printf("| = | "); printf("%slost%s", YELLOW, RESET); printf(" :)         |\n"); printf("| = |                 |\n"); 
     printf("| = | Press any key   |\n"); printf("| = | to continue ... |\n"); 
     printf("| = |                 |\n"); printf("= = = = = = = = = = = =\n");
     getchar(); 
